@@ -1,0 +1,199 @@
+---
+title: "Fire_NOBO_Manuscript"
+output: html_document
+date: "2025-08-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading libraries
+```{r}
+library(janitor)
+library(tidyverse)
+library(ggthemes)
+library(lubridate)
+library(lme4)
+library(readxl)
+library(writexl)
+library(sf)
+library(MuMIn)
+library(scales)
+library(sjPlot)
+library(rsq)
+library(betareg)
+library(broom)
+library(caret)
+library(performance)
+library(gam)
+library(mgcv)
+theme_set(theme_minimal())
+```
+
+Loading datasets
+```{r}
+#Importing summer locations, already joined with veg data and birds online.
+summer2022_locs_veg_data <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2022/summer_2022_points_veg_CorrectBirdsOnline.xlsx") %>%
+  mutate(date = ymd(date)) %>%
+  dplyr::filter(status != "D") 
+
+#Importing veg data
+veg_data_2022 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/VegSurveys2022.xlsx") %>%
+  clean_names()
+
+```
+
+
+#### Determining proportion of birds located in burned areas daily ####
+```{r}
+# Counting unique birds signaled within a burned area each day
+birds_in_burned_areas <- summer2022_locs_veg_data %>%
+  dplyr::filter(burned == 1) %>%
+  group_by(date) %>%
+  summarize(birds_in_burned_areas = n_distinct(band_numb))
+
+
+# Joining into summer locs data
+summer2022_locs_veg_data <- summer2022_locs_veg_data %>%
+  left_join(birds_in_burned_areas, by = "date")
+
+# Handling NA values for birds_in_burned_areas
+summer2022_locs_veg_data$birds_in_burned_areas[is.na(summer2022_locs_veg_data$birds_in_burned_areas)] <- 0
+
+# Calculate percentage of birds in burned areas
+s22rx <- summer2022_locs_veg_data %>%
+  mutate(pib = (birds_in_burned_areas / birds_online))
+
+# Handling NA values for pib
+s22rx$pib[is.na(s22rx$pib)] <- 0
+```
+
+
+Lets add a distance to edge column for our points 
+```{r}
+#### Importing map of burned areas, calculating distance ####
+
+#Importing map of burned areas, summer 2022.
+#Reading burn compartments in again, but as an sf object
+burn_compartments_2022 <- st_read("/Volumes/Samsung_T5/BOBWHITE_DATA/Maps/2022_burn_compartments/Polygons/NoAG_NoHW/2022_burn_units_NoAG_NoHW.shp")
+
+# Converting burn_compartments_2022 polygons to line geometries that represent their boundaries. This is necessary to calc min distances later.
+burn_compartment_boundaries <- st_boundary(burn_compartments_2022)
+
+# Converting tibble of points to an sf object
+summer2022_locs_sf <- st_as_sf(s22rx, coords = c("easting", "northing"), crs = st_crs(burn_compartments_2022))
+
+# Calculating the distance from each point to the nearest line boundary of the burn compartments, storing it in matrix
+distance_matrix <- st_distance(summer2022_locs_sf, burn_compartment_boundaries)
+
+# Applying the function min() to each row (1 does this -- we'd use 2 for columns) in the distance matrix
+min_distances <- apply(distance_matrix, 1, min)
+
+# Add the minimum distance to the original tibble as a new column
+s22rx$distance_to_edge <- min_distances
+
+
+#This looks right, and similar to what we got in other analysis. Adding a vline to DSF = 56 (Date of supplemental feeding)
+s22rx %>%
+  dplyr::filter(burned == 1) %>%
+  ggplot(aes(DSF, distance_to_edge)) +
+  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
+  geom_point() +
+  labs(x = "Days since fire",
+       y = "Distance to perimeter of burn unit (m)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+
+#Distance model. Can we predict dist to edge with DSF
+dist_model <- lmer(distance_to_edge ~ DSF + (1 | band_numb), 
+                    data = s22rx %>% dplyr::filter(burned == 1))
+#Summarizing distance model
+summary(dist_model)
+
+#Mean distance to edge
+s22rx %>%
+  dplyr::filter(burned == 1) %>%
+  summarize(mean_distance = mean(distance_to_edge))
+
+
+#Histogram of distance to edge
+s22rx %>%
+  dplyr::filter(burned == 1) %>%
+  ggplot(aes(distance_to_edge)) +
+  geom_histogram(binwidth = 10, fill = "midnight blue", alpha = 0.8) + 
+  geom_vline(xintercept = 28, linetype = "dashed", color = "gray") +
+  labs(x = "Distance to edge",
+       y = "",
+       title = "Distances to edge following prescribed fire",
+       subtitle = "Only looking at birds within burn compartments")
+
+  
+#Mean distance to edge of burned units for quail NOT in burned areas.
+s22rx %>%
+  dplyr::filter(burned == 0) %>%
+  summarize(mean_distance = mean(distance_to_edge))
+
+
+#Distance to edge histogram for birds NOT in burned units
+s22rx %>%
+  dplyr::filter(burned == 0) %>%
+  ggplot(aes(distance_to_edge)) +
+  geom_histogram(binwidth = 20, fill = "midnight blue", alpha = 0.8) + 
+  geom_vline(xintercept = 95.8, linetype = "dashed", color = "gray") +
+  labs(x = "Distance to edge",
+       y = "",
+       title = "Distances to edge following prescribed fire",
+       subtitle = "Only looking at birds in unburned compartments")
+
+#Boxplot comparing distance to edge of burned units (Birds in unburned areas vs birds in burned areas)
+s22rx %>%
+  mutate(burned = factor(burned, labels = c("Unburned", "Burned"))) %>%
+  ggplot(aes(x = burned, y = distance_to_edge)) +
+  geom_boxplot(fill = "midnight blue", alpha = 0.5) +
+  labs(x = "Burn Status",
+       y = "Distance to Edge",
+       title = "Distance to edge of burn compartments following prescribed fire")
+
+#Making a separate dataframe for birds in burned units and distance to edge.
+s22dist <- s22rx %>%
+  dplyr::select(burned, distance_to_edge)
+```
+
+Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". Supplemental feed began on June 6th (DSF = 56)
+```{r}
+#Creating dataframe for "before supplemental feed"
+s22rx_pre <- s22rx %>%
+  filter(DSF < 56)
+
+s22rx_post <- s22rx %>%
+  filter(DSF >= 56)
+```
+
+Centering and scaling our vegetation covariates. Removing Duplicate Rows, so we only have 1 row per day.
+```{r}
+#Centering and scaling pre-sup feed. Adding small value to pib so it never = 0. 
+s22rx_pre_sc <- s22rx_pre %>% 
+  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+  mutate(pib = pib + 0.00001)
+
+#Centering and scaling post-sup feed. Adding small value to pib so it never = 0. 
+s22rx_post_sc <- s22rx_post %>% 
+  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+  mutate(pib = pib + 0.00001)
+```
+
