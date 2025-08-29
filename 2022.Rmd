@@ -174,6 +174,33 @@ s22dist <- s22rx %>%
   dplyr::select(burned, distance_to_edge)
 ```
 
+Plot of DSV and PIB, with vertical line at sup feed date.
+```{r}
+#Create one row for each day. May need this later.
+s22rx_uniq <- s22rx %>% 
+  group_by(DSF) %>%
+  slice_head(n = 1) %>%
+  ungroup()
+
+s22rx_uniq %>%
+  ggplot(aes(DSF, pib)) +
+  geom_point() +
+  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
+  labs(x = "Days since fire", y = "PIB") +
+   theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
+
 
 Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". 
 Supplemental feed began on June 6th (DSF = 56)
@@ -201,29 +228,280 @@ s22rx_post_sc <- s22rx_post %>%
   mutate(pib = pib + 0.00001)
 
 #Selecting relevant columns, pre-sup feed.
-s22rx_pre_sc <- s22rx_pre_sc %>%
+s22rx_pre <- s22rx_pre %>%
   dplyr::select(pib, DSF, pg:hs)
 
 #Selecting relevant columns, post-sup feed.
-s22rx_post_sc <- s22rx_post_sc %>%
+s22rx_post <- s22rx_post %>%
   dplyr::select(pib, DSF, pg:hs)
 
 
 #Creating only one row per day, pre-sup.
-s22rx_pre_uniq <- s22rx_pre_sc %>% 
+s22rx_pre_uniq <- s22rx_pre %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
 #Creating only one row per day, post-sup.
-s22rx_post_uniq <- s22rx_post_sc %>% 
+s22rx_post_uniq <- s22rx_post %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 ```
 
-
+Checking for correlations in veg data.
 ```{r}
+#Selecting veg, pre-sup feed
+pre_veg <- s22rx_pre_sc %>%
+  dplyr::select(pg:hs)
 
+#Pre-sup, veg cor
+round(cor(pre_veg), 2)
+
+#Selecting veg, pre-sup feed
+post_veg <- s22rx_post_sc %>%
+  dplyr::select(pg:hs)
+
+#Pre-sup, veg cor
+round(cor(post_veg), 2)
+```
+
+Plot of use of burned areas in time.
+```{r}
+#Pre-sup feed
+s22rx_pre_uniq %>%
+  ggplot(aes(DSF, pib)) +
+  geom_point() +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")) +
+        labs(x = "DSF", y = "PIB")
+
+#Post-sup feed
+s22rx_post_uniq %>%
+  ggplot(aes(DSF, pib)) +
+  geom_point() +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")) +
+        labs(x = "DSF", y = "PIB")
+```
+
+#Pre-sup: Predicting PIB using PF.
+```{r}    
+library(betareg)
+library(dplyr)
+library(ggplot2)
+
+# Base model (center line)
+pf_model <- betareg(pib ~ pf,
+                    data = s22rx_pre_uniq,
+                    link = "logit",
+                    na.action = na.pass)
+
+# Prediction grid over pf
+pf_values <- seq(min(s22rx_pre_uniq$pf, na.rm = TRUE),
+                 max(s22rx_pre_uniq$pf, na.rm = TRUE),
+                 length.out = 1000)
+newdata <- data.frame(pf = pf_values)
+
+# Parametric predictions from the fitted model (for the black line)
+predicted_pib <- predict(pf_model, newdata = newdata, type = "response")
+
+# Bootstrap CIs via case-resampling
+set.seed(123)
+n_boot <- 1000
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(pf_values))
+
+for (i in seq_len(n_boot)) {
+  resample_idx  <- sample(nrow(s22rx_pre_uniq), replace = TRUE)
+  resample_data <- s22rx_pre_uniq[resample_idx, ]
+
+  # Refit and predict; skip failed fits gracefully
+  boot_fit <- tryCatch(
+    betareg(pib ~ pf, data = resample_data, link = "logit", na.action = na.pass),
+    error = function(e) NULL,
+    warning = function(w) invokeRestart("muffleWarning")
+  )
+
+  if (!is.null(boot_fit)) {
+    boot_preds[i, ] <- tryCatch(
+      predict(boot_fit, newdata = newdata, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdata))
+    )
+  }
+}
+
+# 95% percentile CIs
+ci_lower <- apply(boot_preds, 2, quantile, probs = 0.025, na.rm = TRUE)
+ci_upper <- apply(boot_preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+
+# Attach to newdata
+newdata$predicted_pib <- predicted_pib
+newdata$ci_lower <- ci_lower
+newdata$ci_upper <- ci_upper
+
+# Plot: raw data, prediction line, CI ribbon
+ggplot(newdata, aes(x = pf)) +
+  geom_point(data = s22rx_pre_uniq, aes(y = pib), size = 2, alpha = 0.7) +
+  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
+  labs(x = "Percent Forbs",  
+       y = "PIB",
+       title = "2022: Pre-supplemental period") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+newdata$DSF <- seq(min(s22rx_pre_uniq$DSF, na.rm = TRUE),
+                   max(s22rx_pre_uniq$DSF, na.rm = TRUE),
+                   length.out = nrow(newdata))
+
+ggplot(newdata, aes(x = DSF)) +
+  geom_point(data = s22rx_pre_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
+  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
+  labs(x = "Days since fire", y = "PIB",
+       title = "2022: Pre-supplemental period") +
+   theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+```
+
+#Post-sup: Predicting PIB using PF
+```{r}
+library(betareg)
+library(dplyr)
+library(ggplot2)
+
+# Base model (center line) — POST period
+pf_model <- betareg(pib ~ pf,
+                    data = s22rx_post_uniq,
+                    link = "logit",
+                    na.action = na.pass)
+
+# Prediction grid over pf (POST)
+pf_values <- seq(min(s22rx_post_uniq$pf, na.rm = TRUE),
+                 max(s22rx_post_uniq$pf, na.rm = TRUE),
+                 length.out = 1000)
+newdata <- data.frame(pf = pf_values)
+
+# Parametric predictions from the fitted model (for the black line)
+predicted_pib <- predict(pf_model, newdata = newdata, type = "response")
+
+# Bootstrap CIs via case-resampling (POST)
+set.seed(123)
+n_boot <- 1000
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(pf_values))
+
+for (i in seq_len(n_boot)) {
+  resample_idx  <- sample(nrow(s22rx_post_uniq), replace = TRUE)
+  resample_data <- s22rx_post_uniq[resample_idx, ]
+
+  # Refit and predict; skip failed fits gracefully
+  boot_fit <- tryCatch(
+    betareg(pib ~ pf, data = resample_data, link = "logit", na.action = na.pass),
+    error = function(e) NULL,
+    warning = function(w) invokeRestart("muffleWarning")
+  )
+
+  if (!is.null(boot_fit)) {
+    boot_preds[i, ] <- tryCatch(
+      predict(boot_fit, newdata = newdata, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdata))
+    )
+  }
+}
+
+# 95% percentile CIs
+ci_lower <- apply(boot_preds, 2, quantile, probs = 0.025, na.rm = TRUE)
+ci_upper <- apply(boot_preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+
+# Attach to newdata
+newdata$predicted_pib <- predicted_pib
+newdata$ci_lower <- ci_lower
+newdata$ci_upper <- ci_upper
+
+# Plot: raw data (POST), prediction line, CI ribbon — x = pf
+ggplot(newdata, aes(x = pf)) +
+  geom_point(data = s22rx_post_uniq, aes(y = pib), size = 2, alpha = 0.7) +
+  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
+  labs(x = "Percent Forbs",
+       y = "PIB",
+       title = "2022: Post-supplemental period") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+# (Optional) Show DSF on the x-axis (POST) — adds a DSF sequence just for plotting
+newdata$DSF <- seq(min(s22rx_post_uniq$DSF, na.rm = TRUE),
+                   max(s22rx_post_uniq$DSF, na.rm = TRUE),
+                   length.out = nrow(newdata))
+
+ggplot(newdata, aes(x = DSF)) +
+  geom_point(data = s22rx_post_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
+  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
+  labs(x = "Days since fire", y = "PIB",
+       title = "2022: Post-supplemental period") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 ```
 
