@@ -174,7 +174,9 @@ s22dist <- s22rx %>%
   dplyr::select(burned, distance_to_edge)
 ```
 
-Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". Supplemental feed began on June 6th (DSF = 56)
+
+Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". 
+Supplemental feed began on June 6th (DSF = 56)
 ```{r}
 #Creating dataframe for "before supplemental feed"
 s22rx_pre <- s22rx %>%
@@ -184,7 +186,9 @@ s22rx_post <- s22rx %>%
   filter(DSF >= 56)
 ```
 
-Centering and scaling our vegetation covariates. Removing Duplicate Rows, so we only have 1 row per day.
+
+Centering and scaling our vegetation covariates. Selecting relevant columns.
+Removing Duplicate Rows, so we only have 1 row per day.
 ```{r}
 #Centering and scaling pre-sup feed. Adding small value to pib so it never = 0. 
 s22rx_pre_sc <- s22rx_pre %>% 
@@ -195,5 +199,31 @@ s22rx_pre_sc <- s22rx_pre %>%
 s22rx_post_sc <- s22rx_post %>% 
   mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
   mutate(pib = pib + 0.00001)
+
+#Selecting relevant columns, pre-sup feed.
+s22rx_pre_sc <- s22rx_pre_sc %>%
+  dplyr::select(pib, DSF, pg:hs)
+
+#Selecting relevant columns, post-sup feed.
+s22rx_post_sc <- s22rx_post_sc %>%
+  dplyr::select(pib, DSF, pg:hs)
+
+
+#Creating only one row per day, pre-sup.
+s22rx_pre_uniq <- s22rx_pre_sc %>% 
+  group_by(DSF) %>%
+  slice_head(n = 1) %>%
+  ungroup()
+
+#Creating only one row per day, post-sup.
+s22rx_post_uniq <- s22rx_post_sc %>% 
+  group_by(DSF) %>%
+  slice_head(n = 1) %>%
+  ungroup()
+```
+
+
+```{r}
+
 ```
 
