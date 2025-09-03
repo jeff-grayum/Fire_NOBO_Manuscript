@@ -507,32 +507,64 @@ ggplot(newdata, aes(x = DSF)) +
 
 Now lets look at rainfall 
 ```{r}
+#Importing weather data
 weather <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2022 .xlsx") %>%
   clean_names()
 
+#Selecting relevant columns
 rain <- weather %>%
   select(date, rain_total_mm)
 
+#Fixing date column
 rain <- rain %>%
   mutate(date = ymd(date))
 
+#Setting brun date
 burn_date <- ymd("2022-04-11")
 
+#Creating dsf
 rain <- weather %>%
   select(date, rain_total_mm) %>%
   mutate(date = ymd(date),
          dsf = as.integer(date - burn_date))
 
+rain %>%
+  ggplot(aes(dsf, rain_total_mm)) +
+  geom_point() +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")) +
+  labs(x = "DSF", y = "Rain total (mm)", title = "2022")
 
-
+#Plot of 
 rain %>%
   arrange(date) %>%
   mutate(cum_rain = cumsum(rain_total_mm)) %>%
   ggplot(aes(x = date, y = cum_rain)) +
   geom_line(color = "darkblue", linewidth = 1.2) +
   labs(x = "Date", y = "Cumulative rainfall (mm)", 
-       title = "Cumulative Rainfall – 2022") +
-  theme_bw()
+       title = "2022") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
 rain %>%
   arrange(dsf) %>%
@@ -541,9 +573,18 @@ rain %>%
   geom_line(color = "darkblue", linewidth = 1.2) +
   labs(x = "Days since fire", 
        y = "Cumulative rainfall (mm)", 
-       title = "Cumulative Rainfall – 2022") +
-  theme_bw()
-
-
+       title = "2022") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 ```
 
