@@ -480,7 +480,7 @@ ggplot(newdata, aes(x = pf)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-# (Optional) Show DSF on the x-axis (POST) — adds a DSF sequence just for plotting
+#Making data frame to plot DSF on the X axis
 newdata$DSF <- seq(min(s22rx_post_uniq$DSF, na.rm = TRUE),
                    max(s22rx_post_uniq$DSF, na.rm = TRUE),
                    length.out = nrow(newdata))
@@ -503,5 +503,47 @@ ggplot(newdata, aes(x = DSF)) +
         legend.text = element_text(colour = "black", size = 12),
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
+
+Now lets look at rainfall 
+```{r}
+weather <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2022 .xlsx") %>%
+  clean_names()
+
+rain <- weather %>%
+  select(date, rain_total_mm)
+
+rain <- rain %>%
+  mutate(date = ymd(date))
+
+burn_date <- ymd("2022-04-11")
+
+rain <- weather %>%
+  select(date, rain_total_mm) %>%
+  mutate(date = ymd(date),
+         dsf = as.integer(date - burn_date))
+
+
+
+rain %>%
+  arrange(date) %>%
+  mutate(cum_rain = cumsum(rain_total_mm)) %>%
+  ggplot(aes(x = date, y = cum_rain)) +
+  geom_line(color = "darkblue", linewidth = 1.2) +
+  labs(x = "Date", y = "Cumulative rainfall (mm)", 
+       title = "Cumulative Rainfall – 2022") +
+  theme_bw()
+
+rain %>%
+  arrange(dsf) %>%
+  mutate(cum_rain = cumsum(rain_total_mm)) %>%
+  ggplot(aes(x = dsf, y = cum_rain)) +
+  geom_line(color = "darkblue", linewidth = 1.2) +
+  labs(x = "Days since fire", 
+       y = "Cumulative rainfall (mm)", 
+       title = "Cumulative Rainfall – 2022") +
+  theme_bw()
+
+
 ```
 
