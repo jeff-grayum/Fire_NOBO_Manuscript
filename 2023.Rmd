@@ -1,7 +1,7 @@
 ---
-title: "Fire_NOBO_Manuscript"
+title: '2023'
 output: html_document
-date: "2025-08-28"
+date: "2025-09-03"
 editor_options: 
   chunk_output_type: console
 ---
@@ -36,12 +36,12 @@ theme_set(theme_minimal())
 Loading datasets
 ```{r}
 #Importing summer locations, already joined with veg data and birds online.
-summer2022_locs_veg_data <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2022/summer_2022_points_veg_CorrectBirdsOnline.xlsx") %>%
+summer2023_locs_veg_data <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2023/s23rx_no6.xlsx") %>%
   mutate(date = ymd(date)) %>%
   dplyr::filter(status == "A") 
 
 #Importing veg data
-veg_data_2022 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/VegSurveys2022.xlsx") %>%
+veg_data_2023 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/VegSurveys2023.xlsx") %>%
   clean_names()
 
 ```
@@ -50,143 +50,45 @@ veg_data_2022 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/V
 #### Determining proportion of birds located in burned areas daily ####
 ```{r}
 # Counting unique birds signaled within a burned area each day
-birds_in_burned_areas <- summer2022_locs_veg_data %>%
+birds_in_burned_areas <- summer2023_locs_veg_data %>%
   dplyr::filter(burned == 1) %>%
   group_by(date) %>%
   summarize(birds_in_burned_areas = n_distinct(band_numb))
 
 
 # Joining into summer locs data
-summer2022_locs_veg_data <- summer2022_locs_veg_data %>%
+summer2023_locs_veg_data <- summer2023_locs_veg_data %>%
   left_join(birds_in_burned_areas, by = "date")
 
 # Handling NA values for birds_in_burned_areas
-summer2022_locs_veg_data$birds_in_burned_areas[is.na(summer2022_locs_veg_data$birds_in_burned_areas)] <- 0
+summer2023_locs_veg_data$birds_in_burned_areas[is.na(summer2023_locs_veg_data$birds_in_burned_areas)] <- 0
 
 # Calculate percentage of birds in burned areas
-s22rx <- summer2022_locs_veg_data %>%
+s23rx <- summer2023_locs_veg_data %>%
   mutate(pib = (birds_in_burned_areas / birds_online))
 
 # Handling NA values for pib
-s22rx$pib[is.na(s22rx$pib)] <- 0
+s23rx$pib[is.na(s23rx$pib)] <- 0
 ```
 
 
-Lets add a distance to edge column for our points 
+
+Plot of DSF and PIB, with vertical line at sup feed date.
 ```{r}
-#### Importing map of burned areas, calculating distance ####
+#Changing dsf to DSF
+s23rx <- s23rx %>% rename(DSF = dsf)
 
-#Importing map of burned areas, summer 2022.
-#Reading burn compartments in again, but as an sf object
-burn_compartments_2022 <- st_read("/Volumes/Samsung_T5/BOBWHITE_DATA/Maps/2022_burn_compartments/Polygons/NoAG_NoHW/2022_burn_units_NoAG_NoHW.shp")
-
-# Converting burn_compartments_2022 polygons to line geometries that represent their boundaries. This is necessary to calc min distances later.
-burn_compartment_boundaries <- st_boundary(burn_compartments_2022)
-
-# Converting tibble of points to an sf object
-summer2022_locs_sf <- st_as_sf(s22rx, coords = c("easting", "northing"), crs = st_crs(burn_compartments_2022))
-
-# Calculating the distance from each point to the nearest line boundary of the burn compartments, storing it in matrix
-distance_matrix <- st_distance(summer2022_locs_sf, burn_compartment_boundaries)
-
-# Applying the function min() to each row (1 does this -- we'd use 2 for columns) in the distance matrix
-min_distances <- apply(distance_matrix, 1, min)
-
-# Add the minimum distance to the original tibble as a new column
-s22rx$distance_to_edge <- min_distances
-
-
-#This looks right, and similar to what we got in other analysis. Adding a vline to DSF = 56 (Date of supplemental feeding)
-s22rx %>%
-  dplyr::filter(burned == 1) %>%
-  ggplot(aes(DSF, distance_to_edge)) +
-  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
-  geom_point() +
-  labs(x = "Days since fire",
-       y = "Distance to perimeter of burn unit (m)") +
-  theme_bw() +
-  theme(legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.line = element_line("black"),
-        axis.ticks = element_line("black"),
-        axis.text.x = element_text(colour = "black", size = 12),
-        axis.title.y = element_text(colour = "black", size = 12),
-        axis.title.x = element_text(colour = "black", size = 12),
-        legend.title = element_text(colour = "black", size = 12),
-        legend.text = element_text(colour = "black", size = 12),
-        axis.text.y = element_text(colour = "black", size = 12),
-        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
-
-
-#Distance model. Can we predict dist to edge with DSF
-dist_model <- lmer(distance_to_edge ~ DSF + (1 | band_numb), 
-                    data = s22rx %>% dplyr::filter(burned == 1))
-#Summarizing distance model
-summary(dist_model)
-
-#Mean distance to edge
-s22rx %>%
-  dplyr::filter(burned == 1) %>%
-  summarize(mean_distance = mean(distance_to_edge))
-
-
-#Histogram of distance to edge
-s22rx %>%
-  dplyr::filter(burned == 1) %>%
-  ggplot(aes(distance_to_edge)) +
-  geom_histogram(binwidth = 10, fill = "midnight blue", alpha = 0.8) + 
-  geom_vline(xintercept = 28, linetype = "dashed", color = "gray") +
-  labs(x = "Distance to edge",
-       y = "",
-       title = "Distances to edge following prescribed fire",
-       subtitle = "Only looking at birds within burn compartments")
-
-  
-#Mean distance to edge of burned units for quail NOT in burned areas.
-s22rx %>%
-  dplyr::filter(burned == 0) %>%
-  summarize(mean_distance = mean(distance_to_edge))
-
-
-#Distance to edge histogram for birds NOT in burned units
-s22rx %>%
-  dplyr::filter(burned == 0) %>%
-  ggplot(aes(distance_to_edge)) +
-  geom_histogram(binwidth = 20, fill = "midnight blue", alpha = 0.8) + 
-  geom_vline(xintercept = 95.8, linetype = "dashed", color = "gray") +
-  labs(x = "Distance to edge",
-       y = "",
-       title = "Distances to edge following prescribed fire",
-       subtitle = "Only looking at birds in unburned compartments")
-
-#Boxplot comparing distance to edge of burned units (Birds in unburned areas vs birds in burned areas)
-s22rx %>%
-  mutate(burned = factor(burned, labels = c("Unburned", "Burned"))) %>%
-  ggplot(aes(x = burned, y = distance_to_edge)) +
-  geom_boxplot(fill = "midnight blue", alpha = 0.5) +
-  labs(x = "Burn Status",
-       y = "Distance to Edge",
-       title = "Distance to edge of burn compartments following prescribed fire")
-
-#Making a separate dataframe for birds in burned units and distance to edge.
-s22dist <- s22rx %>%
-  dplyr::select(burned, distance_to_edge)
-```
-
-Plot of DSV and PIB, with vertical line at sup feed date.
-```{r}
 #Create one row for each day. May need this later.
-s22rx_uniq <- s22rx %>% 
+s23rx_uniq <- s23rx %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
-s22rx_uniq %>%
+s23rx_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
-  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
-  labs(x = "Days since fire", y = "PIB", title = "2022") +
+  geom_vline(xintercept = 77, linetype = "dashed", color = "midnight blue") +
+  labs(x = "Days since fire", y = "PIB", title = "2023") +
    theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -202,48 +104,46 @@ s22rx_uniq %>%
 ```
 
 
-Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". 
-Supplemental feed began on June 6th (DSF = 56)
+Now lets separate s23rx into "before supplemental feed" and "after supplemental feed". 
+Supplemental feed began on June 6th (DSF = 77)
 ```{r}
 #Creating dataframe for "before supplemental feed"
-s22rx_pre <- s22rx %>%
-  filter(DSF < 56)
+s23rx_pre <- s23rx %>%
+  filter(DSF < 77)
 
-s22rx_post <- s22rx %>%
-  filter(DSF >= 56)
+s23rx_post <- s23rx %>%
+  filter(DSF >= 77)
 ```
 
 
 Centering and scaling our vegetation covariates. Selecting relevant columns.
 Removing Duplicate Rows, so we only have 1 row per day.
 ```{r}
-#Centering and scaling pre-sup feed. Adding small value to pib so it never = 0. 
-s22rx_pre_sc <- s22rx_pre %>% 
-  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+#Adding small value to pib so it never = 0. 
+s23rx_pre <- s23rx_pre %>% 
   mutate(pib = pib + 0.00001)
 
-#Centering and scaling post-sup feed. Adding small value to pib so it never = 0. 
-s22rx_post_sc <- s22rx_post %>% 
-  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+#Adding small value to pib so it never = 0. 
+s23rx_post <- s23rx_post %>% 
   mutate(pib = pib + 0.00001)
 
 #Selecting relevant columns, pre-sup feed.
-s22rx_pre <- s22rx_pre %>%
-  dplyr::select(pib, DSF, pg:hs)
+s23rx_pre <- s23rx_pre %>%
+  dplyr::select(pib, DSF, hg:ps)
 
 #Selecting relevant columns, post-sup feed.
-s22rx_post <- s22rx_post %>%
-  dplyr::select(pib, DSF, pg:hs)
+s23rx_post <- s23rx_post %>%
+  dplyr::select(pib, DSF, hg:ps)
 
 
 #Creating only one row per day, pre-sup.
-s22rx_pre_uniq <- s22rx_pre %>% 
+s23rx_pre_uniq <- s23rx_pre %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
 #Creating only one row per day, post-sup.
-s22rx_post_uniq <- s22rx_post %>% 
+s23rx_post_uniq <- s23rx_post %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
@@ -252,24 +152,27 @@ s22rx_post_uniq <- s22rx_post %>%
 Checking for correlations in veg data.
 ```{r}
 #Selecting veg, pre-sup feed
-pre_veg <- s22rx_pre_sc %>%
-  dplyr::select(pg:hs)
+pre_veg <- s23rx_pre %>%
+  dplyr::select(hg:ps)
 
 #Pre-sup, veg cor
 round(cor(pre_veg), 2)
 
 #Selecting veg, pre-sup feed
-post_veg <- s22rx_post_sc %>%
-  dplyr::select(pg:hs)
+post_veg <- s23rx_post %>%
+  dplyr::select(hg:ps)
 
 #Pre-sup, veg cor
 round(cor(post_veg), 2)
+
+veg <- s23rx %>%
+  dplyr::select(hg:ps)
 ```
 
 Plot of use of burned areas in time.
 ```{r}
 #Pre-sup feed
-s22rx_pre_uniq %>%
+s23rx_pre_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
   theme(legend.position = "none",
@@ -287,7 +190,7 @@ s22rx_pre_uniq %>%
         labs(x = "DSF", y = "PIB")
 
 #Post-sup feed
-s22rx_post_uniq %>%
+s23rx_post_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
   theme(legend.position = "none",
@@ -305,39 +208,35 @@ s22rx_post_uniq %>%
         labs(x = "DSF", y = "PIB")
 ```
 
-#Pre-sup: Predicting PIB using PS.
+#Pre-sup: Predicting PIB using PF.
 ```{r}    
-library(betareg)
-library(dplyr)
-library(ggplot2)
-
 # Base model (center line)
-ps_model <- betareg(pib ~ ps,
-                    data = s22rx_pre_uniq,
+pf_model <- betareg(pib ~ pf,
+                    data = s23rx_pre_uniq,
                     link = "logit",
                     na.action = na.pass)
 
 # Prediction grid over pf
-ps_values <- seq(min(s22rx_pre_uniq$ps, na.rm = TRUE),
-                 max(s22rx_pre_uniq$ps, na.rm = TRUE),
+pf_values <- seq(min(s23rx_pre_uniq$pf, na.rm = TRUE),
+                 max(s23rx_pre_uniq$pf, na.rm = TRUE),
                  length.out = 1000)
-newdata <- data.frame(ps = ps_values)
+newdata <- data.frame(pf = pf_values)
 
 # Parametric predictions from the fitted model (for the black line)
-predicted_pib <- predict(ps_model, newdata = newdata, type = "response")
+predicted_pib <- predict(pf_model, newdata = newdata, type = "response")
 
 # Bootstrap CIs via case-resampling
 set.seed(123)
 n_boot <- 1000
-boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(ps_values))
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(pf_values))
 
 for (i in seq_len(n_boot)) {
-  resample_idx  <- sample(nrow(s22rx_pre_uniq), replace = TRUE)
-  resample_data <- s22rx_pre_uniq[resample_idx, ]
+  resample_idx  <- sample(nrow(s23rx_pre_uniq), replace = TRUE)
+  resample_data <- s23rx_pre_uniq[resample_idx, ]
 
   # Refit and predict; skip failed fits gracefully
   boot_fit <- tryCatch(
-    betareg(pib ~ ps, data = resample_data, link = "logit", na.action = na.pass),
+    betareg(pib ~ pf, data = resample_data, link = "logit", na.action = na.pass),
     error = function(e) NULL,
     warning = function(w) invokeRestart("muffleWarning")
   )
@@ -360,13 +259,13 @@ newdata$ci_lower <- ci_lower
 newdata$ci_upper <- ci_upper
 
 # Plot: raw data, prediction line, CI ribbon
-ggplot(newdata, aes(x = ps)) +
-  geom_point(data = s22rx_pre_uniq, aes(y = pib), size = 2, alpha = 0.7) +
+ggplot(newdata, aes(x = pf)) +
+  geom_point(data = s23rx_pre_uniq, aes(y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrubs",  
+  labs(x = "Percent Forbs",  
        y = "PIB",
-       title = "2022: Pre-supplemental period") +
+       title = "2023: Pre-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -380,16 +279,16 @@ ggplot(newdata, aes(x = ps)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-newdata$DSF <- seq(min(s22rx_pre_uniq$DSF, na.rm = TRUE),
-                   max(s22rx_pre_uniq$DSF, na.rm = TRUE),
+newdata$DSF <- seq(min(s23rx_pre_uniq$DSF, na.rm = TRUE),
+                   max(s23rx_pre_uniq$DSF, na.rm = TRUE),
                    length.out = nrow(newdata))
 
 ggplot(newdata, aes(x = DSF)) +
-  geom_point(data = s22rx_pre_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
+  geom_point(data = s23rx_pre_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
   labs(x = "Days since fire", y = "PIB",
-       title = "2022: Pre-supplemental period") +
+       title = "2023: Pre-supplemental period") +
    theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -403,83 +302,38 @@ ggplot(newdata, aes(x = DSF)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-ggplot(newdata, aes(x = ps)) +
-  geom_point(data = s22rx_pre_uniq,
-             aes(x = ps, y = pib),
-             size = 2, alpha = 0.7) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Pre-supplemental period") +
-  theme(legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.line = element_line("black"),
-        axis.ticks = element_line("black"),
-        axis.text.x = element_text(colour = "black", size = 12),
-        axis.title.y = element_text(colour = "black", size = 12),
-        axis.title.x = element_text(colour = "black", size = 12),
-        legend.title = element_text(colour = "black", size = 12),
-        legend.text = element_text(colour = "black", size = 12),
-        axis.text.y = element_text(colour = "black", size = 12),
-        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
-
-ggplot(newdata, aes(x = ps)) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Pre-supplemental period") +
-  theme(legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.line = element_line("black"),
-        axis.ticks = element_line("black"),
-        axis.text.x = element_text(colour = "black", size = 12),
-        axis.title.y = element_text(colour = "black", size = 12),
-        axis.title.x = element_text(colour = "black", size = 12),
-        legend.title = element_text(colour = "black", size = 12),
-        legend.text = element_text(colour = "black", size = 12),
-        axis.text.y = element_text(colour = "black", size = 12),
-        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
-
-
 ```
 
-#Post-sup: Predicting PIB using PS
+#Post-sup: Predicting PIB using PF
 ```{r}
-library(betareg)
-library(dplyr)
-library(ggplot2)
 
 # Base model (center line) — POST period
-ps_model <- betareg(pib ~ ps,
-                    data = s22rx_post_uniq,
+pf_model <- betareg(pib ~ pf,
+                    data = s23rx_post_uniq,
                     link = "logit",
                     na.action = na.pass)
 
 # Prediction grid over pf (POST)
-ps_values <- seq(min(s22rx_post_uniq$ps, na.rm = TRUE),
-                 max(s22rx_post_uniq$ps, na.rm = TRUE),
+pf_values <- seq(min(s23rx_post_uniq$pf, na.rm = TRUE),
+                 max(s23rx_post_uniq$pf, na.rm = TRUE),
                  length.out = 1000)
-newdata <- data.frame(ps = ps_values)
+newdata <- data.frame(pf = pf_values)
 
 # Parametric predictions from the fitted model (for the black line)
-predicted_pib <- predict(ps_model, newdata = newdata, type = "response")
+predicted_pib <- predict(pf_model, newdata = newdata, type = "response")
 
 # Bootstrap CIs via case-resampling (POST)
 set.seed(123)
 n_boot <- 1000
-boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(ps_values))
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(pf_values))
 
 for (i in seq_len(n_boot)) {
-  resample_idx  <- sample(nrow(s22rx_post_uniq), replace = TRUE)
-  resample_data <- s22rx_post_uniq[resample_idx, ]
+  resample_idx  <- sample(nrow(s23rx_post_uniq), replace = TRUE)
+  resample_data <- s23rx_post_uniq[resample_idx, ]
 
   # Refit and predict; skip failed fits gracefully
   boot_fit <- tryCatch(
-    betareg(pib ~ ps, data = resample_data, link = "logit", na.action = na.pass),
+    betareg(pib ~ pf, data = resample_data, link = "logit", na.action = na.pass),
     error = function(e) NULL,
     warning = function(w) invokeRestart("muffleWarning")
   )
@@ -502,13 +356,13 @@ newdata$ci_lower <- ci_lower
 newdata$ci_upper <- ci_upper
 
 # Plot: raw data (POST), prediction line, CI ribbon — x = pf
-ggplot(newdata, aes(x = ps)) +
-  geom_point(data = s22rx_post_uniq, aes(y = pib), size = 2, alpha = 0.7) +
+ggplot(newdata, aes(x = pf)) +
+  geom_point(data = s23rx_post_uniq, aes(y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover",
+  labs(x = "Percent Forbs",
        y = "PIB",
-       title = "2022: Post-supplemental period") +
+       title = "2023: Post-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -523,16 +377,16 @@ ggplot(newdata, aes(x = ps)) +
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
 #Making data frame to plot DSF on the X axis
-newdata$DSF <- seq(min(s22rx_post_uniq$DSF, na.rm = TRUE),
-                   max(s22rx_post_uniq$DSF, na.rm = TRUE),
+newdata$DSF <- seq(min(s23rx_post_uniq$DSF, na.rm = TRUE),
+                   max(s23rx_post_uniq$DSF, na.rm = TRUE),
                    length.out = nrow(newdata))
 
 ggplot(newdata, aes(x = DSF)) +
-  geom_point(data = s22rx_post_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
+  geom_point(data = s23rx_post_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
   labs(x = "Days since fire", y = "PIB",
-       title = "2022: Post-supplemental period") +
+       title = "2023: Post-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -547,10 +401,10 @@ ggplot(newdata, aes(x = DSF)) +
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 ```
 
-Now lets look at rainfall 2022
+Now lets look at rainfall 2023
 ```{r}
 #Importing weather data
-weather <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2022 .xlsx") %>%
+weather <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2023 .xlsx") %>%
   clean_names()
 
 #Selecting relevant columns
@@ -561,8 +415,8 @@ rain <- weather %>%
 rain <- rain %>%
   mutate(date = ymd(date))
 
-#Setting brun date
-burn_date <- ymd("2022-04-11")
+#Setting burn date
+burn_date <- ymd("2023-03-21")
 
 #Creating dsf
 rain <- weather %>%
@@ -594,7 +448,7 @@ rain %>%
   ggplot(aes(x = date, y = cum_rain)) +
   geom_line(color = "darkblue", linewidth = 1.2) +
   labs(x = "Date", y = "Cumulative rainfall (mm)", 
-       title = "2022") +
+       title = "2023") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -615,7 +469,7 @@ rain %>%
   geom_line(color = "darkblue", linewidth = 1.2) +
   labs(x = "Days since fire", 
        y = "Cumulative rainfall (mm)", 
-       title = "2022") +
+       title = "2023") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -630,73 +484,89 @@ rain %>%
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 ```
 
-
-#### CHATGPT VERSION ####
+Now lets compare rainfall in 2022 vs 2023
 ```{r}
-#### Loading datasets ####
-#Importing summer locations, already joined with veg data and birds online.
-summer2022_locs_veg_data <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2022/summer_2022_points_veg_CorrectBirdsOnline.xlsx") %>%
-  mutate(date = ymd(date)) %>%
-  dplyr::filter(status == "A") 
 
-#Importing veg data
-veg_data_2022 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/VegSurveys2022.xlsx") %>%
-  clean_names()
+## ---- 2022 ----
+#Importing weather data
+weather_22 <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2022 .xlsx") %>%
+  clean_names() %>%
+  mutate(year = 2022)
 
+#Selecting relevant columns
+rain_22 <- weather_22 %>%
+  select(date, rain_total_mm, year)
 
-#### Determining proportion of birds located in burned areas daily ####
-# Counting unique birds signaled within a burned area each day
-birds_in_burned_areas <- summer2022_locs_veg_data %>%
-  dplyr::filter(burned == 1) %>%
-  group_by(date) %>%
-  summarize(birds_in_burned_areas = n_distinct(band_numb))
+#Fixing date column
+rain_22 <- rain_22 %>%
+  mutate(date = ymd(date))
 
-# Joining into summer locs data
-summer2022_locs_veg_data <- summer2022_locs_veg_data %>%
-  left_join(birds_in_burned_areas, by = "date")
+#Setting burn date
+burn_date_22 <- ymd("2022-04-11")
 
-# Handling NA values for birds_in_burned_areas
-summer2022_locs_veg_data$birds_in_burned_areas[is.na(summer2022_locs_veg_data$birds_in_burned_areas)] <- 0
+#Creating dsf
+rain_22 <- weather_22 %>%
+  select(date, rain_total_mm, year) %>%
+  mutate(date = ymd(date),
+         dsf  = as.integer(date - burn_date_22))
 
-# Calculate percentage of birds in burned areas
-s22rx <- summer2022_locs_veg_data %>%
-  mutate(pib = (birds_in_burned_areas / birds_online))
+## ---- 2023 ----
+#Importing weather data
+weather_23 <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2023 .xlsx") %>%
+  clean_names() %>%
+  mutate(year = 2023)
 
-# Handling NA values for pib
-s22rx$pib[is.na(s22rx$pib)] <- 0
+#Selecting relevant columns
+rain_23 <- weather_23 %>%
+  select(date, rain_total_mm, year)
 
+#Fixing date column
+rain_23 <- rain_23 %>%
+  mutate(date = ymd(date))
 
-#### Lets add a distance to edge column for our points ####
-#### Importing map of burned areas, calculating distance ####
+#Setting burn date
+burn_date_23 <- ymd("2023-03-21")
 
-#Importing map of burned areas, summer 2022.
-#Reading burn compartments in again, but as an sf object
-burn_compartments_2022 <- st_read("/Volumes/Samsung_T5/BOBWHITE_DATA/Maps/2022_burn_compartments/Polygons/NoAG_NoHW/2022_burn_units_NoAG_NoHW.shp")
+#Creating dsf
+rain_23 <- weather_23 %>%
+  select(date, rain_total_mm, year) %>%
+  mutate(date = ymd(date),
+         dsf  = as.integer(date - burn_date_23))
 
-# Converting burn_compartments_2022 polygons to line geometries that represent their boundaries. This is necessary to calc min distances later.
-burn_compartment_boundaries <- st_boundary(burn_compartments_2022)
+## ---- Combine years ----
+rain <- bind_rows(rain_22, rain_23)
 
-# Converting tibble of points to an sf object
-summer2022_locs_sf <- st_as_sf(s22rx, coords = c("easting", "northing"), crs = st_crs(burn_compartments_2022))
-
-# Calculating the distance from each point to the nearest line boundary of the burn compartments, storing it in matrix
-distance_matrix <- st_distance(summer2022_locs_sf, burn_compartment_boundaries)
-
-# Applying the function min() to each row (1 does this -- we'd use 2 for columns) in the distance matrix
-min_distances <- apply(distance_matrix, 1, min)
-
-# Add the minimum distance to the original tibble as a new column
-s22rx$distance_to_edge <- min_distances
-
-
-#This looks right, and similar to what we got in other analysis. Adding a vline to DSF = 56 (Date of supplemental feeding)
-s22rx %>%
-  dplyr::filter(burned == 1) %>%
-  ggplot(aes(DSF, distance_to_edge)) +
-  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
+## ---- Facet-wrapped: daily rainfall vs DSF ----
+rain %>%
+  ggplot(aes(dsf, rain_total_mm)) +
   geom_point() +
+  facet_wrap(~ year, ncol = 1) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")) +
+  labs(x = "DSF", y = "Rain total (mm)", title = "Daily rainfall by DSF (2022 vs 2023)")
+
+## ---- Facet-wrapped: cumulative rainfall vs DSF ----
+rain %>%
+  arrange(year, dsf) %>%
+  group_by(year) %>%
+  mutate(cum_rain = cumsum(replace_na(rain_total_mm, 0))) %>%
+  ungroup() %>%
+  ggplot(aes(x = dsf, y = cum_rain)) +
+  geom_line(color = "darkblue", linewidth = 1.2) +
+  facet_wrap(~ year, ncol = 2) +
   labs(x = "Days since fire",
-       y = "Distance to perimeter of burn unit (m)") +
+       y = "Cumulative rainfall (mm)",
+       title = "Cumulative rainfall") +
   theme_bw() +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
@@ -711,74 +581,90 @@ s22rx %>%
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
+rain %>%
+  arrange(year, dsf) %>%
+  group_by(year) %>%
+  mutate(cum_rain = cumsum(replace_na(rain_total_mm, 0))) %>%
+  ungroup() %>%
+  ggplot(aes(x = dsf, y = cum_rain, color = factor(year), group = year)) +
+  geom_line(linewidth = 1.2) +
+  labs(x = "Days since fire",
+       y = "Cumulative rainfall (mm)",
+       color = "Year") +
+  scale_x_continuous(limits = c(0, 150), expand = c(0,0)) +  # extend x-axis to 150
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line("black"),
+    axis.ticks = element_line("black"),
+    axis.text.x = element_text(colour = "black", size = 12),
+    axis.title.y = element_text(colour = "black", size = 12),
+    axis.title.x = element_text(colour = "black", size = 12),
+    legend.title = element_text(colour = "black", size = 12),
+    legend.text = element_text(colour = "black", size = 12),
+    axis.text.y = element_text(colour = "black", size = 12),
+    plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")
+  )
 
-#Distance model. Can we predict dist to edge with DSF
-dist_model <- lmer(distance_to_edge ~ DSF + (1 | band_numb), 
-                   data = s22rx %>% dplyr::filter(burned == 1))
-#Summarizing distance model
-summary(dist_model)
 
-#Mean distance to edge
-s22rx %>%
+```
+
+
+#### CHAT GPT VERSION ####
+```{r}
+
+#### Loading datasets ####
+#Importing summer locations, already joined with veg data and birds online.
+summer2023_locs_veg_data <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2023/s23rx_no6.xlsx") %>%
+  mutate(date = ymd(date)) %>%
+  dplyr::filter(status == "A") 
+
+#Importing veg data
+veg_data_2023 <- read_xlsx("/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/VegSurveys/VegSurveys2023.xlsx") %>%
+  clean_names()
+
+
+#### Determining proportion of birds located in burned areas daily ####
+# Counting unique birds signaled within a burned area each day
+birds_in_burned_areas <- summer2023_locs_veg_data %>%
   dplyr::filter(burned == 1) %>%
-  summarize(mean_distance = mean(distance_to_edge))
+  group_by(date) %>%
+  summarize(birds_in_burned_areas = n_distinct(band_numb))
+
+# Joining into summer locs data
+summer2023_locs_veg_data <- summer2023_locs_veg_data %>%
+  left_join(birds_in_burned_areas, by = "date")
+
+# Handling NA values for birds_in_burned_areas
+summer2023_locs_veg_data$birds_in_burned_areas[
+  is.na(summer2023_locs_veg_data$birds_in_burned_areas)
+] <- 0
+
+# Calculate proportion of birds in burned areas
+s23rx <- summer2023_locs_veg_data %>%
+  mutate(pib = (birds_in_burned_areas / birds_online))
+
+# Handling NA values for pib
+s23rx$pib[is.na(s23rx$pib)] <- 0
 
 
-#Histogram of distance to edge
-s22rx %>%
-  dplyr::filter(burned == 1) %>%
-  ggplot(aes(distance_to_edge)) +
-  geom_histogram(binwidth = 10, fill = "midnight blue", alpha = 0.8) + 
-  geom_vline(xintercept = 28, linetype = "dashed", color = "gray") +
-  labs(x = "Distance to edge",
-       y = "",
-       title = "Distances to edge following prescribed fire",
-       subtitle = "Only looking at birds within burn compartments")
+#### Plot of DSF and PIB, with vertical line at sup feed date. ####
+#Changing dsf to DSF
+s23rx <- s23rx %>% rename(DSF = dsf)
 
-
-#Mean distance to edge of burned units for quail NOT in burned areas.
-s22rx %>%
-  dplyr::filter(burned == 0) %>%
-  summarize(mean_distance = mean(distance_to_edge))
-
-
-#Distance to edge histogram for birds NOT in burned units
-s22rx %>%
-  dplyr::filter(burned == 0) %>%
-  ggplot(aes(distance_to_edge)) +
-  geom_histogram(binwidth = 20, fill = "midnight blue", alpha = 0.8) + 
-  geom_vline(xintercept = 95.8, linetype = "dashed", color = "gray") +
-  labs(x = "Distance to edge",
-       y = "",
-       title = "Distances to edge following prescribed fire",
-       subtitle = "Only looking at birds in unburned compartments")
-
-#Boxplot comparing distance to edge of burned units (Birds in unburned areas vs birds in burned areas)
-s22rx %>%
-  mutate(burned = factor(burned, labels = c("Unburned", "Burned"))) %>%
-  ggplot(aes(x = burned, y = distance_to_edge)) +
-  geom_boxplot(fill = "midnight blue", alpha = 0.5) +
-  labs(x = "Burn Status",
-       y = "Distance to Edge",
-       title = "Distance to edge of burn compartments following prescribed fire")
-
-#Making a separate dataframe for birds in burned units and distance to edge.
-s22dist <- s22rx %>%
-  dplyr::select(burned, distance_to_edge)
-
-
-#### Plot of DSV and PIB, with vertical line at sup feed date. ####
 #Create one row for each day. May need this later.
-s22rx_uniq <- s22rx %>% 
+s23rx_uniq <- s23rx %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
-s22rx_uniq %>%
+s23rx_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
-  geom_vline(xintercept = 56, linetype = "dashed", color = "midnight blue") +
-  labs(x = "Days since fire", y = "PIB", title = "2022") +
+  geom_vline(xintercept = 77, linetype = "dashed", color = "midnight blue") +
+  labs(x = "Days since fire", y = "PIB", title = "2023") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -793,69 +679,82 @@ s22rx_uniq %>%
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
 
-#### Now lets separate s22rx into "before supplemental feed" and "after supplemental feed". ####
-#### Supplemental feed began on June 6th (DSF = 56) ####
+#### Now lets separate s23rx into "before supplemental feed" and "after supplemental feed". ####
+#### Supplemental feed began on June 6th (DSF = 77) ####
 #Creating dataframe for "before supplemental feed"
-s22rx_pre <- s22rx %>%
-  filter(DSF < 56)
+s23rx_pre <- s23rx %>%
+  filter(DSF < 77)
 
-s22rx_post <- s22rx %>%
-  filter(DSF >= 56)
+s23rx_post <- s23rx %>%
+  filter(DSF >= 77)
 
 
 #### Centering and scaling our vegetation covariates. Selecting relevant columns. ####
 #### Removing Duplicate Rows, so we only have 1 row per day. ####
-#Centering and scaling pre-sup feed. Adding small value to pib so it never = 0. 
-s22rx_pre_sc <- s22rx_pre %>% 
-  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+#Adding small value to pib so it never = 0. 
+s23rx_pre <- s23rx_pre %>% 
   mutate(pib = pib + 0.00001)
 
-#Centering and scaling post-sup feed. Adding small value to pib so it never = 0. 
-s22rx_post_sc <- s22rx_post %>% 
-  mutate_at(vars(pg:hs), .funs = function(x){as.numeric(scale(x, center = T))}) %>%
+#Adding small value to pib so it never = 0. 
+s23rx_post <- s23rx_post %>% 
   mutate(pib = pib + 0.00001)
 
 #Selecting relevant columns, pre-sup feed.
-s22rx_pre <- s22rx_pre %>%
-  dplyr::select(pib, DSF, pg:hs)
+s23rx_pre <- s23rx_pre %>%
+  dplyr::select(pib, DSF, hg:ps)
 
 #Selecting relevant columns, post-sup feed.
-s22rx_post <- s22rx_post %>%
-  dplyr::select(pib, DSF, pg:hs)
-
+s23rx_post <- s23rx_post %>%
+  dplyr::select(pib, DSF, hg:ps)
 
 #Creating only one row per day, pre-sup.
-s22rx_pre_uniq <- s22rx_pre %>% 
+s23rx_pre_uniq <- s23rx_pre %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
 #Creating only one row per day, post-sup.
-s22rx_post_uniq <- s22rx_post %>% 
+s23rx_post_uniq <- s23rx_post %>% 
   group_by(DSF) %>%
   slice_head(n = 1) %>%
   ungroup()
 
 
 #### Checking for correlations in veg data. ####
-#Selecting veg, pre-sup feed
-pre_veg <- s22rx_pre_sc %>%
-  dplyr::select(pg:hs)
+#### Checking for correlations in veg data: 2023 ####
 
-#Pre-sup, veg cor
-round(cor(pre_veg), 2)
+# Selecting veg, pre-sup feed
+veg23 <- s23rx_uniq %>%
+  dplyr::select(hg:ps)
 
-#Selecting veg, pre-sup feed
-post_veg <- s22rx_post_sc %>%
-  dplyr::select(pg:hs)
+# Correlation matrix (rounded) – default 'use = "everything"'
+veg_cor23 <- veg23 %>%
+  cor() %>%
+  round(2)
 
-#Pre-sup, veg cor
+# Convert to data frame and keep row names
+veg_cor23_df <- veg_cor23 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "variable")
+
+# Write to Excel
+write_xlsx(
+  veg_cor23_df,
+  "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/veg_cor23.xlsx"
+)
+
+
+#Selecting veg, post-sup feed
+post_veg <- s23rx_post %>%
+  dplyr::select(hg:ps)
+
+#Post-sup, veg cor
 round(cor(post_veg), 2)
 
 
 #### Plot of use of burned areas in time. ####
 #Pre-sup feed
-s22rx_pre_uniq %>%
+s23rx_pre_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
   theme(legend.position = "none",
@@ -873,7 +772,7 @@ s22rx_pre_uniq %>%
   labs(x = "DSF", y = "PIB")
 
 #Post-sup feed
-s22rx_post_uniq %>%
+s23rx_post_uniq %>%
   ggplot(aes(DSF, pib)) +
   geom_point() +
   theme(legend.position = "none",
@@ -892,24 +791,19 @@ s22rx_post_uniq %>%
 
 
 #### Pre-sup: Predicting PIB using PS. ####
-library(betareg)
-library(dplyr)
-library(ggplot2)
-
-# *** IMPORTANT CHANGE FOR BETAREG ***
 # Ensure PIB is strictly within (0, 1) for beta regression
-s22rx_pre_uniq <- s22rx_pre_uniq %>%
+s23rx_pre_uniq <- s23rx_pre_uniq %>%
   mutate(pib = pmin(pmax(pib, 1e-5), 1 - 1e-5))
 
 # Base model (center line)
 ps_model <- betareg(pib ~ ps,
-                    data = s22rx_pre_uniq,
+                    data = s23rx_pre_uniq,
                     link = "logit",
                     na.action = na.pass)
 
 # Prediction grid over ps
-ps_values <- seq(min(s22rx_pre_uniq$ps, na.rm = TRUE),
-                 max(s22rx_pre_uniq$ps, na.rm = TRUE),
+ps_values <- seq(min(s23rx_pre_uniq$ps, na.rm = TRUE),
+                 max(s23rx_pre_uniq$ps, na.rm = TRUE),
                  length.out = 1000)
 newdata <- data.frame(ps = ps_values)
 
@@ -922,8 +816,8 @@ n_boot <- 1000
 boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(ps_values))
 
 for (i in seq_len(n_boot)) {
-  resample_idx  <- sample(nrow(s22rx_pre_uniq), replace = TRUE)
-  resample_data <- s22rx_pre_uniq[resample_idx, ]
+  resample_idx  <- sample(nrow(s23rx_pre_uniq), replace = TRUE)
+  resample_data <- s23rx_pre_uniq[resample_idx, ]
 
   # Refit and predict; skip failed fits gracefully
   boot_fit <- tryCatch(
@@ -946,17 +840,16 @@ ci_upper <- apply(boot_preds, 2, quantile, probs = 0.975, na.rm = TRUE)
 
 # Attach to newdata
 newdata$predicted_pib <- predicted_pib
-newdata$ci_lower <- ci_lower
-newdata$ci_upper <- ci_upper
+newdata$ci_lower      <- ci_lower
+newdata$ci_upper      <- ci_upper
 
-# Plot: raw data, prediction line, CI ribbon (ps on x-axis)
+# Plot: prediction line, CI ribbon (no points)
 ggplot(newdata, aes(x = ps)) +
-  geom_point(data = s22rx_pre_uniq, aes(y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
   labs(x = "Percent shrubs",  
        y = "PIB",
-       title = "2022: Pre-supplemental period") +
+       title = "2023: Pre-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -970,58 +863,16 @@ ggplot(newdata, aes(x = ps)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-# Add a DSF sequence (cosmetic x-axis relabel using same predicted_pib)
-newdata$DSF <- seq(min(s22rx_pre_uniq$DSF, na.rm = TRUE),
-                   max(s22rx_pre_uniq$DSF, na.rm = TRUE),
+# DSF sequence for cosmetic x-axis relabel using same predicted_pib
+newdata$DSF <- seq(min(s23rx_pre_uniq$DSF, na.rm = TRUE),
+                   max(s23rx_pre_uniq$DSF, na.rm = TRUE),
                    length.out = nrow(newdata))
 
 ggplot(newdata, aes(x = DSF)) +
-  geom_point(data = s22rx_pre_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
   labs(x = "Days since fire", y = "PIB",
-       title = "2022: Pre-supplemental period") +
-  theme(legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.line = element_line("black"),
-        axis.ticks = element_line("black"),
-        axis.text.x = element_text(colour = "black", size = 12),
-        axis.title.y = element_text(colour = "black", size = 12),
-        axis.title.x = element_text(colour = "black", size = 12),
-        legend.title = element_text(colour = "black", size = 12),
-        legend.text = element_text(colour = "black", size = 12),
-        axis.text.y = element_text(colour = "black", size = 12),
-        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
-
-ggplot(newdata, aes(x = ps)) +
-  geom_point(data = s22rx_pre_uniq,
-             aes(x = ps, y = pib),
-             size = 2, alpha = 0.7) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Pre-supplemental period") +
-  theme(legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.line = element_line("black"),
-        axis.ticks = element_line("black"),
-        axis.text.x = element_text(colour = "black", size = 12),
-        axis.title.y = element_text(colour = "black", size = 12),
-        axis.title.x = element_text(colour = "black", size = 12),
-        legend.title = element_text(colour = "black", size = 12),
-        legend.text = element_text(colour = "black", size = 12),
-        axis.text.y = element_text(colour = "black", size = 12),
-        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
-
-ggplot(newdata, aes(x = ps)) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Pre-supplemental period") +
+       title = "2023: Pre-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -1036,74 +887,66 @@ ggplot(newdata, aes(x = ps)) +
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
 
-#### Post-sup: Predicting PIB using PS. ####
-
+#### Post-sup: Predicting PIB using PS ####
 # Ensure PIB is strictly within (0, 1) for beta regression
-s22rx_post_uniq <- s22rx_post_uniq %>%
+s23rx_post_uniq <- s23rx_post_uniq %>%
   mutate(pib = pmin(pmax(pib, 1e-5), 1 - 1e-5))
 
-# Base model (center line) for post-supplemental period
-ps_model_post <- betareg(pib ~ ps,
-                         data = s22rx_post_uniq,
-                         link = "logit",
-                         na.action = na.pass)
+# Base model (center line) — POST period
+ps_model <- betareg(pib ~ ps,
+                    data = s23rx_post_uniq,
+                    link = "logit",
+                    na.action = na.pass)
 
-# Prediction grid over ps for post-supplemental period
-ps_values_post <- seq(min(s22rx_post_uniq$ps, na.rm = TRUE),
-                      max(s22rx_post_uniq$ps, na.rm = TRUE),
-                      length.out = 1000)
-
-newdata_post <- data.frame(ps = ps_values_post)
+# Prediction grid over ps (POST)
+ps_values <- seq(min(s23rx_post_uniq$ps, na.rm = TRUE),
+                 max(s23rx_post_uniq$ps, na.rm = TRUE),
+                 length.out = 1000)
+newdata <- data.frame(ps = ps_values)
 
 # Parametric predictions from the fitted model (for the black line)
-predicted_pib_post <- predict(ps_model_post,
-                              newdata = newdata_post,
-                              type = "response")
+predicted_pib <- predict(ps_model, newdata = newdata, type = "response")
 
-# Bootstrap CIs via case-resampling (post-supplemental)
-set.seed(456)
-n_boot_post <- 1000
-boot_preds_post <- matrix(NA_real_, nrow = n_boot_post, ncol = length(ps_values_post))
+# Bootstrap CIs via case-resampling (POST)
+set.seed(123)
+n_boot <- 1000
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = length(ps_values))
 
-for (i in seq_len(n_boot_post)) {
-  resample_idx_post  <- sample(nrow(s22rx_post_uniq), replace = TRUE)
-  resample_data_post <- s22rx_post_uniq[resample_idx_post, ]
+for (i in seq_len(n_boot)) {
+  resample_idx  <- sample(nrow(s23rx_post_uniq), replace = TRUE)
+  resample_data <- s23rx_post_uniq[resample_idx, ]
 
   # Refit and predict; skip failed fits gracefully
-  boot_fit_post <- tryCatch(
-    betareg(pib ~ ps,
-            data = resample_data_post,
-            link = "logit",
-            na.action = na.pass),
+  boot_fit <- tryCatch(
+    betareg(pib ~ ps, data = resample_data, link = "logit", na.action = na.pass),
     error = function(e) NULL,
     warning = function(w) invokeRestart("muffleWarning")
   )
 
-  if (!is.null(boot_fit_post)) {
-    boot_preds_post[i, ] <- tryCatch(
-      predict(boot_fit_post, newdata = newdata_post, type = "response"),
-      error = function(e) rep(NA_real_, nrow(newdata_post))
+  if (!is.null(boot_fit)) {
+    boot_preds[i, ] <- tryCatch(
+      predict(boot_fit, newdata = newdata, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdata))
     )
   }
 }
 
-# 95% percentile CIs for post-supplemental period
-ci_lower_post <- apply(boot_preds_post, 2, quantile, probs = 0.025, na.rm = TRUE)
-ci_upper_post <- apply(boot_preds_post, 2, quantile, probs = 0.975, na.rm = TRUE)
+# 95% percentile CIs
+ci_lower <- apply(boot_preds, 2, quantile, probs = 0.025, na.rm = TRUE)
+ci_upper <- apply(boot_preds, 2, quantile, probs = 0.975, na.rm = TRUE)
 
-# Attach to newdata_post
-newdata_post$predicted_pib <- predicted_pib_post
-newdata_post$ci_lower      <- ci_lower_post
-newdata_post$ci_upper      <- ci_upper_post
+# Attach to newdata
+newdata$predicted_pib <- predicted_pib
+newdata$ci_lower      <- ci_lower
+newdata$ci_upper      <- ci_upper
 
-# Plot 1: raw data, prediction line, CI ribbon (ps on x-axis) – post-supplemental
-ggplot(newdata_post, aes(x = ps)) +
-  geom_point(data = s22rx_post_uniq, aes(y = pib), size = 2, alpha = 0.7) +
+# Plot: prediction line, CI ribbon — x = ps (no points)
+ggplot(newdata, aes(x = ps)) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrubs",  
+  labs(x = "Percent shrubs",
        y = "PIB",
-       title = "2022: Post-supplemental period") +
+       title = "2023: Post-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -1117,17 +960,16 @@ ggplot(newdata_post, aes(x = ps)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-# Optional: Add a DSF sequence (cosmetic x-axis relabel using same predicted_pib)
-newdata_post$DSF <- seq(min(s22rx_post_uniq$DSF, na.rm = TRUE),
-                        max(s22rx_post_uniq$DSF, na.rm = TRUE),
-                        length.out = nrow(newdata_post))
+#Making data frame to plot DSF on the X axis (no points)
+newdata$DSF <- seq(min(s23rx_post_uniq$DSF, na.rm = TRUE),
+                   max(s23rx_post_uniq$DSF, na.rm = TRUE),
+                   length.out = nrow(newdata))
 
-ggplot(newdata_post, aes(x = DSF)) +
-  geom_point(data = s22rx_post_uniq, aes(x = DSF, y = pib), size = 2, alpha = 0.7) +
+ggplot(newdata, aes(x = DSF)) +
   geom_line(aes(y = predicted_pib), linewidth = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
   labs(x = "Days since fire", y = "PIB",
-       title = "2022: Post-supplemental period") +
+       title = "2023: Post-supplemental period") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -1141,16 +983,54 @@ ggplot(newdata_post, aes(x = DSF)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-# Plot 3: ps vs PIB with line + ribbon only (no points), post-supplemental
-ggplot(newdata_post, aes(x = ps)) +
-  geom_point(data = s22rx_post_uniq,
-             aes(x = ps, y = pib),
-             size = 2, alpha = 0.7) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Post-supplemental period") +
+
+#### Rainfall 2023 ####
+#Importing weather data
+weather <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2023 .xlsx") %>%
+  clean_names()
+
+#Selecting relevant columns
+rain <- weather %>%
+  select(date, rain_total_mm)
+
+#Fixing date column
+rain <- rain %>%
+  mutate(date = ymd(date))
+
+#Setting burn date
+burn_date <- ymd("2023-03-21")
+
+#Creating dsf
+rain <- weather %>%
+  select(date, rain_total_mm) %>%
+  mutate(date = ymd(date),
+         dsf = as.integer(date - burn_date))
+
+rain %>%
+  ggplot(aes(dsf, rain_total_mm)) +
+  geom_point() +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt")) +
+  labs(x = "DSF", y = "Rain total (mm)", title = "2022")
+
+#Plot of cumulative rainfall (date)
+rain %>%
+  arrange(date) %>%
+  mutate(cum_rain = cumsum(rain_total_mm)) %>%
+  ggplot(aes(x = date, y = cum_rain)) +
+  geom_line(color = "darkblue", linewidth = 1.2) +
+  labs(x = "Date", y = "Cumulative rainfall (mm)", 
+       title = "2023") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
@@ -1164,12 +1044,15 @@ ggplot(newdata_post, aes(x = ps)) +
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
 
-ggplot(newdata_post, aes(x = ps)) +
-  geom_line(aes(y = predicted_pib), linewidth = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
-  labs(x = "Percent shrub cover", 
-       y = "PIB",
-       title = "2022: Post-supplemental period") +
+#Plot of cumulative rainfall (DSF)
+rain %>%
+  arrange(dsf) %>%
+  mutate(cum_rain = cumsum(rain_total_mm)) %>%
+  ggplot(aes(x = dsf, y = cum_rain)) +
+  geom_line(color = "darkblue", linewidth = 1.2) +
+  labs(x = "Days since fire", 
+       y = "Cumulative rainfall (mm)", 
+       title = "2023") +
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
