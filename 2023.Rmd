@@ -801,6 +801,8 @@ ps_model <- betareg(pib ~ ps,
                     link = "logit",
                     na.action = na.pass)
 
+summary(ps_model)
+
 # Prediction grid over ps
 ps_values <- seq(min(s23rx_pre_uniq$ps, na.rm = TRUE),
                  max(s23rx_pre_uniq$ps, na.rm = TRUE),
@@ -897,6 +899,8 @@ ps_model <- betareg(pib ~ ps,
                     data = s23rx_post_uniq,
                     link = "logit",
                     na.action = na.pass)
+
+summary(ps_model)
 
 # Prediction grid over ps (POST)
 ps_values <- seq(min(s23rx_post_uniq$ps, na.rm = TRUE),
@@ -1065,5 +1069,59 @@ rain %>%
         legend.text = element_text(colour = "black", size = 12),
         axis.text.y = element_text(colour = "black", size = 12),
         plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+#LOOCV
+beta_loocv <- function(data) {
+  
+  n <- nrow(data)
+  preds <- numeric(n)
+  
+  for (i in 1:n) {
+    train <- data[-i, ]
+    test  <- data[i, , drop = FALSE]
+    
+    fit <- betareg(pib ~ ps, data = train, link = "logit")
+    preds[i] <- predict(fit, newdata = test, type = "response")
+  }
+  
+  # Combine predictions + observed
+  data$pred <- preds
+  
+  # Calculate performance metrics
+  rmse <- sqrt(mean((data$pib - data$pred)^2))
+  cor_obs_pred <- cor(data$pib, data$pred)
+  
+  list(
+    rmse = rmse,
+    cor_obs_pred = cor_obs_pred,
+    results = data
+  )
+}
+
+#### 2023 LOOCV ####
+
+# 2023 pre-supplemental
+loocv_23_pre  <- beta_loocv(s23rx_pre_uniq)
+loocv_23_pre$rmse
+loocv_23_pre$cor_obs_pred
+
+# 2023 post-supplemental
+loocv_23_post <- beta_loocv(s23rx_post_uniq)
+loocv_23_post$rmse
+loocv_23_post$cor_obs_pred
+
+#### WAS SUP FEED SIG? ####
+#### 2023 Pre/Post Combined Dataset ####
+combined23 <- bind_rows(
+  s23rx_pre_uniq  %>% mutate(feed = 0),
+  s23rx_post_uniq %>% mutate(feed = 1)
+)
+
+#### Beta regression including ps × feed interaction ####
+m23 <- betareg(pib ~ ps * feed, data = combined23, link = "logit")
+summary(m23)
+
+
+
 
 ```
