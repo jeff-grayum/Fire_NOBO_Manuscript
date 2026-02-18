@@ -174,7 +174,7 @@ s22dist <- s22rx %>%
   dplyr::select(burned, distance_to_edge)
 ```
 
-Plot of DSV and PIB, with vertical line at sup feed date.
+Plot of DSF and PIB, with vertical line at sup feed date.
 ```{r}
 #Create one row for each day. May need this later.
 s22rx_uniq <- s22rx %>% 
@@ -229,11 +229,11 @@ s22rx_post_sc <- s22rx_post %>%
 
 #Selecting relevant columns, pre-sup feed.
 s22rx_pre <- s22rx_pre %>%
-  dplyr::select(pib, DSF, pg:hs)
+  dplyr::select(pib, DSF, week, pg:hs)
 
 #Selecting relevant columns, post-sup feed.
 s22rx_post <- s22rx_post %>%
-  dplyr::select(pib, DSF, pg:hs)
+  dplyr::select(pib, DSF,week, pg:hs)
 
 
 #Creating only one row per day, pre-sup.
@@ -249,7 +249,7 @@ s22rx_post_uniq <- s22rx_post %>%
   ungroup()
 ```
 
-Checking for correlations in veg data.
+#### Checking for correlations in veg data.####
 ```{r}
 #Selecting veg, pre-sup feed
 pre_veg <- s22rx_pre_sc %>%
@@ -817,11 +817,11 @@ s22rx_post_sc <- s22rx_post %>%
 
 #Selecting relevant columns, pre-sup feed.
 s22rx_pre <- s22rx_pre %>%
-  dplyr::select(pib, DSF, pg:hs)
+  dplyr::select(pib, DSF, week, start_date_of_week, pg:hs)
 
 #Selecting relevant columns, post-sup feed.
 s22rx_post <- s22rx_post %>%
-  dplyr::select(pib, DSF, pg:hs)
+  dplyr::select(pib, DSF,week, start_date_of_week, pg:hs)
 
 
 #Creating only one row per day, pre-sup.
@@ -1244,6 +1244,526 @@ combined <- bind_rows(
 # Beta regression including interaction
 m <- betareg(pib ~ ps * feed, data = combined, link = "logit")
 summary(m)
+
+loocv_22_pre  <- beta_loocv(s22rx_pre_uniq)
+loocv_22_pre$rmse
+loocv_22_pre$cor_obs_pred
+
+
+#### 2022: ps * feed interaction – predictions with period-specific ps ranges ####
+
+# 1. Combine 2022 pre- and post-supp data
+combined22 <- bind_rows(
+  s22rx_pre_uniq  %>% mutate(feed = 0),
+  s22rx_post_uniq %>% mutate(feed = 1)
+)
+
+# 2. Fit interaction model
+m <- betareg(
+  pib ~ ps * feed,
+  data      = combined22,
+  link      = "logit",
+  na.action = na.pass
+)
+summary(m)
+
+# 3. Build prediction grids with period-specific ps ranges
+
+# Pre-supp (feed = 0)
+ps_pre_vals <- seq(
+  min(s22rx_pre_uniq$ps, na.rm = TRUE),
+  max(s22rx_pre_uniq$ps, na.rm = TRUE),
+  length.out = 1000
+)
+new_pre <- data.frame(
+  ps         = ps_pre_vals,
+  feed       = 0,
+  period_lab = "Pre-supplemental"
+)
+
+# Post-supp (feed = 1)
+ps_post_vals <- seq(
+  min(s22rx_post_uniq$ps, na.rm = TRUE),
+  max(s22rx_post_uniq$ps, na.rm = TRUE),
+  length.out = 1000
+)
+new_post <- data.frame(
+  ps         = ps_post_vals,
+  feed       = 1,
+  period_lab = "Post-supplemental"
+)
+
+# Combine prediction grid
+newdata <- bind_rows(new_pre, new_post)
+
+# 4. Model predictions from fitted interaction model
+predicted_pib <- predict(m, newdata = newdata, type = "response")
+
+# 5. Bootstrap CIs for all rows in `newdata` at once
+set.seed(123)
+n_boot <- 1000
+boot_preds <- matrix(NA_real_, nrow = n_boot, ncol = nrow(newdata))
+
+for (i in seq_len(n_boot)) {
+  resample_idx  <- sample(nrow(combined), replace = TRUE)
+  resample_data <- combined[resample_idx, ]
+
+  boot_fit <- tryCatch(
+    betareg(
+      pib ~ ps * feed,
+      data      = resample_data,
+      link      = "logit",
+      na.action = na.pass
+    ),
+    error   = function(e) NULL,
+    warning = function(w) invokeRestart("muffleWarning")
+  )
+
+  if (!is.null(boot_fit)) {
+    boot_preds[i, ] <- tryCatch(
+      predict(boot_fit, newdata = newdata, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdata))
+    )
+  }
+}
+
+# 6. 95% CIs for each row of newdata
+ci_lower <- apply(boot_preds, 2, quantile, probs = 0.025, na.rm = TRUE)
+ci_upper <- apply(boot_preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+
+# 7. Combined prediction table
+pred_df <- newdata %>%
+  mutate(
+    predicted_pib = predicted_pib,
+    ci_lower      = ci_lower,
+    ci_upper      = ci_upper,
+    period_lab    = factor(period_lab,
+                           levels = c("Pre-supplemental", "Post-supplemental"))
+  )
+
+# 8. Plot: two smooth curves + ribbons, NO points
+ggplot(pred_df,
+       aes(x = ps, y = predicted_pib,
+           color = period_lab, fill = period_lab)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper),
+              alpha = 0.2, color = NA) +
+  labs(x = "Percent shrub cover",
+       y = "PIB",
+       color = "Period",
+       fill  = "Period",
+       title = "2022: Predicted PIB vs shrub cover (pre- and post-supplemental)") +
+  theme(legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+
+## 2022: four candidate models with ps and feed
+
+# 1) Interaction model: pib ~ ps * feed
+m22_i <- betareg(
+  pib ~ ps * feed,
+  data      = combined22,
+  link      = "logit",
+  na.action = na.pass
+)
+
+# 2) Additive model: pib ~ ps + feed
+m22_a <- betareg(
+  pib ~ ps + feed,
+  data      = combined22,
+  link      = "logit",
+  na.action = na.pass
+)
+
+# 3) ps-only model
+m22_s <- betareg(
+  pib ~ ps,
+  data      = combined22,
+  link      = "logit",
+  na.action = na.pass
+)
+
+# 4) feed-only model
+m22_f <- betareg(
+  pib ~ feed,
+  data      = combined22,
+  link      = "logit",
+  na.action = na.pass
+)
+
+# 3. Function to extract summary stats
+extract_info <- function(model, name) {
+  sm <- summary(model)$coefficients$mean
+  
+  data.frame(
+    Model   = name,
+    df      = attr(logLik(model), "df"),
+    logLik  = as.numeric(logLik(model)),
+    AICc    = MuMIn::AICc(model),
+    R2      = unname(performance::r2(model)$R2),   # <- unname to kill "Pseudo R2..." labels
+    p_ps    = if ("ps" %in% rownames(sm)) sm["ps", "Pr(>|z|)"] else NA,
+    p_feed  = if ("feed" %in% rownames(sm)) sm["feed", "Pr(>|z|)"] else NA,
+    p_int   = if ("ps:feed" %in% rownames(sm)) sm["ps:feed", "Pr(>|z|)"] else NA
+  )
+}
+
+# 4. Build summary table
+summary22 <- bind_rows(
+  extract_info(m22_i, "ps * feed"),
+  extract_info(m22_a, "ps + feed"),
+  extract_info(m22_s, "ps only"),
+  extract_info(m22_f, "feed only")
+) %>%
+  arrange(AICc) %>%
+  mutate(
+    delta  = AICc - min(AICc),
+    weight = MuMIn::Weights(AICc)
+  )
+
+rownames(summary22) <- NULL  # clean row names
+
+summary22
+
+write_xlsx(summary22, "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/model_summary_22.xlsx")
+
+summary(m22_i)
+
+
+#### Predict plot with two lines (feedn and no feed) ####
+# Ensure feed is a factor (for clean plotting)
+ combined22 <- combined22 %>%
+     mutate(feed_f = factor(feed, levels = c(0,1),
+                           labels = c("No supplemental feed", "Supplemental feed")))
+ 
+ m <- betareg(pib ~ ps * feed_f, data = combined22, link = "logit", na.action = na.pass)
+
+# Prediction grid
+ ps_seq <- seq(min(combined22$ps, na.rm = TRUE),
+               max(combined22$ps, na.rm = TRUE),
+               length.out = 250)
+ 
+ newdat <- expand_grid(
+     ps     = ps_seq,
+     feed_f = levels(combined22$feed_f)
+ )
+ 
+ # Point predictions
+ newdat$pred <- predict(m, newdata = newdat, type = "response")
+ 
+ # Bootstrap CIs
+ set.seed(123)
+ B <- 1000
+ boot_mat <- matrix(NA_real_, nrow = B, ncol = nrow(newdat))
+ 
+ for (b in seq_len(B)) {
+   idx <- sample(seq_len(nrow(combined22)), replace = TRUE)
+     dat_b <- combined22[idx, ]
+     
+     fit_b <- tryCatch(
+         betareg(pib ~ ps * feed_f, data = dat_b, link = "logit"),
+         error = function(e) NULL
+     )
+     
+     if (!is.null(fit_b)) {
+         boot_mat[b, ] <- tryCatch(
+             predict(fit_b, newdata = newdat, type = "response"),
+             error = function(e) rep(NA_real_, nrow(newdat))
+         )
+     }
+ }
+ 
+ newdat <- newdat %>%
+     mutate(
+         lo = apply(boot_mat, 2, quantile, probs = 0.025, na.rm = TRUE),
+         hi = apply(boot_mat, 2, quantile, probs = 0.975, na.rm = TRUE)
+     )
+ 
+ # Plot
+ ggplot(newdat, aes(ps, pred, color = feed_f, fill = feed_f, linetype = feed_f)) +
+     geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, color = NA) +
+     geom_line(linewidth = 1.2) +
+     labs(x = "Percent shrub cover",
+          y = "Predicted PIB",
+          color = "Feed",
+          fill  = "Feed",
+          linetype = "Feed") +
+     theme_classic() +
+   theme(legend.position = "bottom") +
+   labs(title = "2022")
+ 
+
+```
+
+
+Started again. Adding rainfall (cumulative).
+```{r}
+#First, we need to add week andn start of week to our data set to join that shit in.
+
+s22rx_pre_uniq  <- s22rx_pre  %>% group_by(DSF) %>% slice_head(n=1) %>% ungroup() %>%
+  select(pib, DSF, week, start_date_of_week, pg:hs)
+
+s22rx_post_uniq <- s22rx_post %>% group_by(DSF) %>% slice_head(n=1) %>% ungroup() %>%
+  select(pib, DSF, week, start_date_of_week, pg:hs)
+
+combined22 <- bind_rows(
+  s22rx_pre_uniq  %>% mutate(feed = 0),
+  s22rx_post_uniq %>% mutate(feed = 1)
+)
+
+#Now, we'll make a lookup table:
+week_lookup_22 <- combined22 %>%
+  distinct(week, start_date_of_week) %>%
+  arrange(start_date_of_week) %>%
+  mutate(
+    end_date_of_week = lead(start_date_of_week) - lubridate::days(1)
+  )
+
+# Last week end date: set to start + 6 days (or max rain date, your choice)
+week_lookup_22$end_date_of_week[is.na(week_lookup_22$end_date_of_week)] <-
+  week_lookup_22$start_date_of_week[is.na(week_lookup_22$end_date_of_week)] + lubridate::days(6)
+
+
+rain_weekly_22 <- rain_22 %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, rain_total_mm) %>%
+  tidyr::crossing(week_lookup_22 %>%
+                    mutate(
+                      start_date = as.Date(start_date_of_week),
+                      end_date   = as.Date(end_date_of_week)
+                    )) %>%
+  filter(date >= start_date, date <= end_date) %>%
+  group_by(week, start_date_of_week) %>%
+  summarise(
+    weekly_rain_mm = sum(rain_total_mm, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+combined22_rain <- combined22 %>%
+  left_join(rain_weekly_22, by = c("week", "start_date_of_week"))
+
+
+combined22_rain %>%
+  ggplot(aes(week, weekly_rain_mm)) +
+  geom_col(fill = "midnight blue") +
+  labs(x = "Week", 
+       y = "Cumulative Rainfall",
+       title = "2022") +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text = element_text(colour = "black", size = 12),
+        axis.text.y = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+
+#Checking for correlations:
+cor_22 <- combined22_rain %>%
+  select(ps, feed, weekly_rain_mm)
+
+cor(cor_22)
+
+# We must define new models! ps and feed strongly confounded.
+## 2022 rainfall-compatible candidate models
+## (No ps + feed in same model due to r > 0.7)
+
+# 1) Shrub-only model
+m22_ps <- betareg(
+  pib ~ ps,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 2) Shrub + rainfall
+m22_ps_rain <- betareg(
+  pib ~ ps + weekly_rain_mm,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 3) Shrub * rainfall interaction
+m22_ps_int <- betareg(
+  pib ~ ps * weekly_rain_mm,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 4) Feed-only model
+m22_feed <- betareg(
+  pib ~ feed,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 5) Feed + rainfall
+m22_feed_rain <- betareg(
+  pib ~ feed + weekly_rain_mm,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 6) Feed * rainfall interaction
+m22_feed_int <- betareg(
+  pib ~ feed * weekly_rain_mm,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+# 7) Rainfall-only model
+m22_rain <- betareg(
+  pib ~ weekly_rain_mm,
+  data = combined22_rain,
+  link = "logit",
+  na.action = na.pass
+)
+
+#### Plot: ps * weekly_rain_mm (10th vs 90th percentile) ####
+
+m   <- m22_ps_int
+dat <- combined22_rain
+
+# Define dry and wet rainfall levels
+rain_lo <- quantile(dat$weekly_rain_mm, 0.10, na.rm = TRUE)
+rain_hi <- quantile(dat$weekly_rain_mm, 0.90, na.rm = TRUE)
+
+# Shrub sequence
+ps_seq <- seq(min(dat$ps, na.rm = TRUE),
+              max(dat$ps, na.rm = TRUE),
+              length.out = 250)
+
+# Prediction grid
+newdat <- bind_rows(
+  tibble(ps = ps_seq,
+         weekly_rain_mm = rain_lo,
+         rain_level = "Dry (10th %)"),
+  tibble(ps = ps_seq,
+         weekly_rain_mm = rain_hi,
+         rain_level = "Wet (90th %)")
+)
+
+# Model predictions
+newdat$pred <- predict(m, newdata = newdat, type = "response")
+
+# --- Bootstrap CIs ---
+set.seed(123)
+B <- 1000
+boot_mat <- matrix(NA_real_, nrow = B, ncol = nrow(newdat))
+
+for (b in seq_len(B)) {
+  idx   <- sample(seq_len(nrow(dat)), replace = TRUE)
+  dat_b <- dat[idx, ]
+  
+  fit_b <- tryCatch(
+    betareg(pib ~ ps * weekly_rain_mm,
+            data = dat_b,
+            link = "logit",
+            na.action = na.pass),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(fit_b)) {
+    boot_mat[b, ] <- tryCatch(
+      predict(fit_b, newdata = newdat, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdat))
+    )
+  }
+}
+
+newdat <- newdat %>%
+  mutate(
+    lo = apply(boot_mat, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(boot_mat, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+
+# Plot
+ggplot(newdat,
+       aes(ps, pred,
+           color = rain_level,
+           fill  = rain_level)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi),
+              alpha = 0.20,
+              color = NA) +
+  geom_line(linewidth = 1.2) +
+  labs(x = "Percent shrub cover",
+       y = "Predicted PIB",
+       color = "Rainfall level",
+       fill  = "Rainfall level",
+       linetype = "Rainfall level",
+       title = "2022") +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+#### 2022 Rainfall Candidate Model Ranking (with p-values) ####
+
+extract_fit22 <- function(model, name) {
+  
+  sm <- summary(model)$coefficients$mean
+  rn <- rownames(sm)
+  
+  data.frame(
+    Model   = name,
+    R2      = unname(performance::r2(model)$R2),
+    AICc    = MuMIn::AICc(model),
+    
+    p_ps    = if ("ps" %in% rn) sm["ps", "Pr(>|z|)"] else NA,
+    p_feed  = if ("feed" %in% rn) sm["feed", "Pr(>|z|)"] else NA,
+    p_rain  = if ("weekly_rain_mm" %in% rn)
+                sm["weekly_rain_mm", "Pr(>|z|)"] else NA,
+    
+    p_int   = if ("ps:weekly_rain_mm" %in% rn) {
+                sm["ps:weekly_rain_mm", "Pr(>|z|)"]
+              } else if ("feed:weekly_rain_mm" %in% rn) {
+                sm["feed:weekly_rain_mm", "Pr(>|z|)"]
+              } else {
+                NA
+              }
+  )
+}
+
+summary22_rain <- bind_rows(
+  extract_fit22(m22_ps_int,   "ps * weekly_rain_mm"),
+  extract_fit22(m22_feed_int, "feed * weekly_rain_mm"),
+  extract_fit22(m22_ps,       "ps"),
+  extract_fit22(m22_ps_rain,  "ps + weekly_rain_mm"),
+  extract_fit22(m22_feed,     "feed"),
+  extract_fit22(m22_feed_rain,"feed + weekly_rain_mm"),
+  extract_fit22(m22_rain,     "weekly_rain_mm")
+) %>%
+  arrange(AICc) %>%
+  mutate(
+    deltaAIC = AICc - min(AICc),
+    weight   = MuMIn::Weights(AICc)
+  )
+
+rownames(summary22_rain) <- NULL
+
+summary22_rain
+
+write_xlsx(summary22_rain,
+           "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/model_summary_22_rain_fixed.xlsx")
+
+```
 
 
 ```

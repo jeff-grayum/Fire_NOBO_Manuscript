@@ -1118,10 +1118,139 @@ combined23 <- bind_rows(
 )
 
 #### Beta regression including ps × feed interaction ####
-m23 <- betareg(pib ~ ps * feed, data = combined23, link = "logit")
-summary(m23)
+m23_i <- betareg(pib ~ ps * feed, data = combined23, link = "logit")
+summary(m23_i)
+
+m23_a <- betareg(pib ~ ps + feed, data = combined23, link = "logit")
+summary(m23_a)
+
+m23_s <- betareg(pib ~ ps, data = combined23, link = "logit")
+summary(m23_s)
+
+m23_f <- betareg(pib ~ feed, data = combined23, link = "logit")
+summary(m23_f)
+
+AIC(m23_i, m23_a, m23_s, m23_f)
 
 
+MuMIn::model.sel(m23_s, m23_f, m23_a, m23_i)
 
+summary(m23_i)
+
+##### 2023 MODEL SELECTION (FOUR MODELS) #####
+
+library(MuMIn)
+library(performance)
+library(dplyr)
+
+# 1. Fit four competing models (already done above)
+# m23_i, m23_a, m23_s, m23_f exist
+
+# 2. Helper: extract summary stats cleanly
+extract_info <- function(model, name) {
+  sm <- summary(model)$coefficients$mean
+  
+  data.frame(
+    Model   = name,
+    df      = attr(logLik(model), "df"),
+    logLik  = as.numeric(logLik(model)),
+    AICc    = MuMIn::AICc(model),
+    R2      = unname(performance::r2(model)$R2),  # remove name "Pseudo R2..."
+    p_ps    = if ("ps" %in% rownames(sm)) sm["ps", "Pr(>|z|)"] else NA,
+    p_feed  = if ("feed" %in% rownames(sm)) sm["feed", "Pr(>|z|)"] else NA,
+    p_int   = if ("ps:feed" %in% rownames(sm)) sm["ps:feed", "Pr(>|z|)"] else NA
+  )
+}
+
+# 3. Build the 2023 summary table
+summary23 <- bind_rows(
+  extract_info(m23_i, "ps * feed"),
+  extract_info(m23_a, "ps + feed"),
+  extract_info(m23_s, "ps only"),
+  extract_info(m23_f, "feed only")
+) %>%
+  arrange(AICc) %>%
+  mutate(
+    delta  = AICc - min(AICc),
+    weight = MuMIn::Weights(AICc)
+  )
+
+rownames(summary23) <- NULL  # Clean rownames
+
+summary23
+
+write_xlsx(summary23, "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/model_summary_23.xlsx")
+
+summary(m23_a)
+
+
+#### Predict plot for top model, with two lines (feed/no feed) ####
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(betareg)
+
+# Ensure feed is a factor (for clean plotting)
+combined23 <- combined23 %>%
+  mutate(feed_f = factor(feed, levels = c(0,1),
+                         labels = c("No supplemental feed", "Supplemental feed")))
+
+# Fit interaction model (2023)
+m <- betareg(pib ~ ps * feed_f, data = combined23, link = "logit", na.action = na.pass)
+
+# Prediction grid
+ps_seq <- seq(min(combined23$ps, na.rm = TRUE),
+              max(combined23$ps, na.rm = TRUE),
+              length.out = 250)
+
+newdat <- expand_grid(
+  ps     = ps_seq,
+  feed_f = levels(combined23$feed_f)
+)
+
+# Point predictions
+newdat$pred <- predict(m, newdata = newdat, type = "response")
+
+# Bootstrap CIs
+set.seed(123)
+B <- 1000
+boot_mat <- matrix(NA_real_, nrow = B, ncol = nrow(newdat))
+
+for (b in seq_len(B)) {
+  idx <- sample(seq_len(nrow(combined23)), replace = TRUE)
+  dat_b <- combined23[idx, ]
+
+  fit_b <- tryCatch(
+    betareg(pib ~ ps * feed_f, data = dat_b, link = "logit"),
+    error = function(e) NULL
+  )
+
+  if (!is.null(fit_b)) {
+    boot_mat[b, ] <- tryCatch(
+      predict(fit_b, newdata = newdat, type = "response"),
+      error = function(e) rep(NA_real_, nrow(newdat))
+    )
+  }
+}
+
+newdat <- newdat %>%
+  mutate(
+    lo = apply(boot_mat, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(boot_mat, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+
+# Plot
+ggplot(newdat, aes(ps, pred, color = feed_f, fill = feed_f, linetype = feed_f)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, color = NA) +
+  geom_line(linewidth = 1.2) +
+  labs(x = "Percent shrub cover",
+       y = "Predicted PIB",
+       color = "Feed",
+       fill  = "Feed",
+       linetype = "Feed",
+       title = "2023: Predicted PIB vs shrub cover") +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  labs(title = "2023")
 
 ```
