@@ -1,0 +1,414 @@
+---
+title: "Fire_NOBO_Manuscript_2023 (reviewed)"
+output: html_document
+date: "2026-04-24"
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+library(janitor)
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(writexl)
+library(betareg)
+library(MuMIn)
+library(performance)
+theme_set(theme_minimal())
+```
+
+## Named constants
+
+```{r}
+BURN_DATE       <- ymd("2023-03-21")
+FEED_START_DATE <- ymd("2023-06-06")
+FEED_START_DSF  <- as.integer(FEED_START_DATE - BURN_DATE)  # 77
+BOOT_B          <- 2000
+BOUND_EPS       <- 1e-5
+ACF_LAG         <- 7
+```
+
+## Helper functions
+
+```{r}
+bound_beta <- function(x, eps = BOUND_EPS) pmin(pmax(x, eps), 1 - eps)
+
+boot_beta_ci <- function(formula, data, newdata, B = BOOT_B, seed = 123) {
+  preds <- matrix(NA_real_, nrow = B, ncol = nrow(newdata))
+  for (i in seq_len(B)) {
+    set.seed(seed + i)
+    d <- data[sample.int(nrow(data), replace = TRUE), ]
+    fit <- tryCatch(
+      suppressWarnings(betareg(formula, data = d, link = "logit")),
+      error = function(e) NULL
+    )
+    if (!is.null(fit)) {
+      preds[i, ] <- tryCatch(
+        predict(fit, newdata = newdata, type = "response"),
+        error = function(e) rep(NA_real_, nrow(newdata))
+      )
+    }
+  }
+  data.frame(
+    lo = apply(preds, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+}
+
+boot_beta_ci_block <- function(formula, data, newdata, block_size = 7,
+                               B = BOOT_B, seed = 123, time_var = "DSF") {
+  data  <- data[order(data[[time_var]]), ]
+  n     <- nrow(data)
+  nblk  <- ceiling(n / block_size)
+  starts_all <- seq_len(max(1, n - block_size + 1))
+  preds <- matrix(NA_real_, nrow = B, ncol = nrow(newdata))
+  for (i in seq_len(B)) {
+    set.seed(seed + i)
+    starts <- sample(starts_all, size = nblk, replace = TRUE)
+    idx <- unlist(lapply(starts, function(s) s:min(s + block_size - 1, n)))
+    idx <- idx[seq_len(n)]
+    d   <- data[idx, ]
+    fit <- tryCatch(
+      suppressWarnings(betareg(formula, data = d, link = "logit")),
+      error = function(e) NULL
+    )
+    if (!is.null(fit)) {
+      preds[i, ] <- tryCatch(
+        predict(fit, newdata = newdata, type = "response"),
+        error = function(e) rep(NA_real_, nrow(newdata))
+      )
+    }
+  }
+  data.frame(
+    lo = apply(preds, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+}
+
+check_autocorr <- function(model, label = "", lag = ACF_LAG) {
+  r <- residuals(model, type = "pearson")
+  cat("\n--- Autocorrelation diagnostics:", label, "---\n")
+  print(Box.test(r, lag = lag, type = "Ljung-Box"))
+  acf(r, main = paste("ACF of Pearson residuals:", label))
+  invisible(r)
+}
+
+plot_theme <- theme(
+  legend.position   = "none",
+  panel.grid.major  = element_blank(),
+  panel.grid.minor  = element_blank(),
+  axis.line         = element_line("black"),
+  axis.ticks        = element_line("black"),
+  axis.text         = element_text(colour = "black", size = 12),
+  axis.title        = element_text(colour = "black", size = 12),
+  legend.title      = element_text(colour = "black", size = 12),
+  legend.text       = element_text(colour = "black", size = 12),
+  plot.margin       = margin(5, 10, 5, 5, "pt")
+)
+```
+
+## Load data
+
+```{r}
+summer23 <- read_xlsx(
+  "/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2023/s23rx_no6.xlsx"
+) %>%
+  mutate(date = ymd(date)) %>%
+  filter(status == "A") %>%
+  rename(DSF = dsf)
+
+rain <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2023 .xlsx") %>%
+  clean_names() %>%
+  transmute(
+    date          = ymd(date),
+    rain_total_mm = rain_total_mm,
+    dsf           = as.integer(date - BURN_DATE)
+  )
+```
+
+## Build PIB
+
+```{r}
+bad_days <- summer23 %>%
+  filter(is.na(birds_online) | birds_online == 0) %>%
+  distinct(date, birds_online)
+cat("Rows with birds_online NA or 0:", nrow(bad_days), "\n")
+if (nrow(bad_days) > 0) print(bad_days)
+
+birds_burned_daily <- summer23 %>%
+  filter(burned == 1) %>%
+  group_by(date) %>%
+  summarise(birds_in_burned_areas = n_distinct(band_numb), .groups = "drop")
+
+s23 <- summer23 %>%
+  left_join(birds_burned_daily, by = "date") %>%
+  mutate(birds_in_burned_areas = replace_na(birds_in_burned_areas, 0)) %>%
+  filter(!is.na(birds_online), birds_online > 0) %>%
+  mutate(pib = birds_in_burned_areas / birds_online)
+
+stopifnot(all(is.finite(s23$pib)))
+stopifnot(all(s23$pib >= 0 & s23$pib <= 1))
+```
+
+## Day-level dataset
+
+```{r}
+invariance <- s23 %>%
+  group_by(DSF) %>%
+  summarise(
+    n_pib  = n_distinct(pib),
+    n_hg   = n_distinct(hg),
+    n_ps   = n_distinct(ps),
+    n_week = n_distinct(week),
+    .groups = "drop"
+  )
+violations <- filter(invariance, n_pib > 1 | n_hg > 1 | n_ps > 1 | n_week > 1)
+if (nrow(violations) > 0) {
+  warning("Within-day values vary on the following DSF; slice_head will silently pick one row:")
+  print(violations)
+} else {
+  cat("Within-day invariance check: PASSED\n")
+}
+
+s23_daily <- s23 %>%
+  arrange(DSF, date) %>%                     # deterministic slice_head
+  group_by(DSF) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  arrange(DSF) %>%                           # time order for ACF / Ljung-Box
+  select(pib, DSF, week, start_date_of_week, hg:ps) %>%
+  mutate(
+    feed    = as.integer(DSF >= FEED_START_DSF),
+    pib_raw = pib,
+    pib     = bound_beta(pib)
+  )
+
+p0 <- mean(s23_daily$pib_raw == 0)
+p1 <- mean(s23_daily$pib_raw == 1)
+cat(sprintf("Proportion PIB == 0 (raw): %.3f\n", p0))
+cat(sprintf("Proportion PIB == 1 (raw): %.3f\n", p1))
+if (p0 > 0.05 || p1 > 0.05) {
+  message("WARNING: >5% of days sit at a boundary. Consider a ZOIB model before trusting inference.")
+}
+
+ggplot(s23_daily, aes(DSF, pib_raw)) +
+  geom_point() +
+  geom_vline(xintercept = FEED_START_DSF, linetype = "dashed", color = "midnightblue") +
+  labs(x = "Days since fire", y = "PIB", title = "2023") +
+  plot_theme
+```
+
+## Rainfall joined (weekly totals; cumulative kept for descriptive plot)
+
+```{r}
+# Cumulative rainfall is retained only for descriptive visuals. For modeling
+# we use weekly totals, because cum_rain_mm is monotonic in DSF (r ~ 0.97)
+# and therefore a time proxy rather than a rainfall signal. Weekly rainfall
+# is not monotonic, so any effect it carries is a genuine rainfall effect.
+rain_cum_daily <- rain %>%
+  arrange(dsf) %>%
+  mutate(cum_rain_mm = cumsum(rain_total_mm)) %>%
+  select(dsf, cum_rain_mm)
+
+week_lookup_23 <- s23_daily %>%
+  distinct(week, start_date_of_week) %>%
+  arrange(start_date_of_week) %>%
+  mutate(
+    start_date = as.Date(start_date_of_week),
+    end_date   = lead(start_date) - 1
+  )
+week_lookup_23$end_date[is.na(week_lookup_23$end_date)] <-
+  week_lookup_23$start_date[is.na(week_lookup_23$end_date)] + 6
+
+rain_weekly_23 <- rain %>%
+  select(date, rain_total_mm) %>%
+  tidyr::crossing(week_lookup_23) %>%
+  filter(date >= start_date, date <= end_date) %>%
+  group_by(week, start_date_of_week) %>%
+  summarise(weekly_rain_mm = sum(rain_total_mm, na.rm = TRUE), .groups = "drop")
+
+s23_rain <- s23_daily %>%
+  left_join(rain_cum_daily,  by = c("DSF" = "dsf")) %>%
+  left_join(rain_weekly_23,  by = c("week", "start_date_of_week")) %>%
+  arrange(DSF)
+
+stopifnot(all(!is.na(s23_rain$cum_rain_mm)))
+stopifnot(all(!is.na(s23_rain$weekly_rain_mm)))
+```
+
+## Collinearity audit (printed for the record)
+
+```{r}
+cor_mat <- s23_rain %>%
+  select(ps, feed, weekly_rain_mm, DSF) %>%
+  cor() %>%
+  round(2)
+cor_mat
+```
+
+## Beta-regression candidate set, ranked by AICc
+
+```{r}
+# Three univariate candidates plus two multivariate candidates combining the
+# two predictors that are NOT collinear in 2022 (ps vs weekly_rain_mm at
+# r = 0.26). Verify the 2023 cor_mat above shows a comparable low
+# correlation before trusting the multivariate fits; if 2023 shows r > ~0.7
+# between ps and weekly_rain_mm, drop both m_ps_rain and m_ps_x_rain from
+# the set. DSF is excluded because it is structurally a time axis and
+# correlates at r > 0.85 with ps and feed.
+m_ps        <- betareg(pib ~ ps,                  data = s23_rain, link = "logit")
+m_rain      <- betareg(pib ~ weekly_rain_mm,      data = s23_rain, link = "logit")
+m_feed      <- betareg(pib ~ feed,                data = s23_rain, link = "logit")
+m_ps_rain   <- betareg(pib ~ ps + weekly_rain_mm, data = s23_rain, link = "logit")
+m_ps_x_rain <- betareg(pib ~ ps * weekly_rain_mm, data = s23_rain, link = "logit")
+
+# Autocorrelation diagnostics on each candidate.
+walk2(
+  list(m_ps, m_rain, m_feed, m_ps_rain, m_ps_x_rain),
+  c("ps", "weekly_rain_mm", "feed",
+    "ps + weekly_rain_mm", "ps * weekly_rain_mm"),
+  ~ check_autocorr(.x, label = .y)
+)
+
+# For single-predictor models we print the predictor's p-value; multivariate
+# models get NA here because the table is single-slot. Full coefficient
+# tables are printed below for each multivariate fit.
+extract_fit <- function(model, name, p_row = 2) {
+  sm <- summary(model)$coefficients$mean
+  p  <- if (!is.na(p_row) && p_row <= nrow(sm)) sm[p_row, "Pr(>|z|)"] else NA_real_
+  data.frame(
+    Model = name,
+    R2    = unname(performance::r2(model)$R2),
+    AICc  = MuMIn::AICc(model),
+    p     = p
+  )
+}
+
+summary23_rain <- bind_rows(
+  extract_fit(m_ps,        "PIB ~ ps"),
+  extract_fit(m_rain,      "PIB ~ weekly_rain_mm"),
+  extract_fit(m_feed,      "PIB ~ feed"),
+  extract_fit(m_ps_rain,   "PIB ~ ps + weekly_rain_mm", p_row = NA),
+  extract_fit(m_ps_x_rain, "PIB ~ ps * weekly_rain_mm", p_row = NA)
+) %>%
+  arrange(AICc) %>%
+  mutate(
+    deltaAICc = AICc - min(AICc),
+    weight    = MuMIn::Weights(AICc)
+  )
+
+summary23_rain
+
+# Coefficient summaries for the multivariate models so all slopes are visible.
+cat("\n--- PIB ~ ps + weekly_rain_mm (2023) ---\n")
+print(summary(m_ps_rain)$coefficients$mean)
+cat("\n--- PIB ~ ps * weekly_rain_mm (2023) ---\n")
+print(summary(m_ps_x_rain)$coefficients$mean)
+
+write_xlsx(summary23_rain,
+           "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/model_summary_23_rain_fixed.xlsx")
+```
+
+
+## Prediction plot: top model (PIB ~ feed)
+
+```{r}
+# feed is binary (0 = pre supp-feed, 1 = post). Predictions are two-level
+# with bootstrap CIs, shown against jittered observed PIB by period.
+m_top <- m_feed
+summary(m_top)
+check_autocorr(m_top, label = "top model: feed")
+
+newdat <- data.frame(feed = c(0L, 1L))
+newdat$pred <- predict(m_top, newdata = newdat, type = "response")
+
+# Block-bootstrap CIs on the two-level prediction. Block size 7 days because
+# daily PIB residuals are expected to be autocorrelated.
+newdat <- cbind(
+  newdat,
+  boot_beta_ci_block(pib ~ feed,
+                     s23_rain, newdat,
+                     block_size = 7, B = BOOT_B, time_var = "DSF")
+)
+
+# Human-readable x-axis labels.
+period_levels <- c("Pre supplemental feed", "Post supplemental feed")
+newdat$period <- factor(period_levels[newdat$feed + 1L], levels = period_levels)
+
+s23_rain_pts <- s23_rain %>%
+  mutate(period = factor(period_levels[feed + 1L], levels = period_levels))
+
+print(newdat)
+
+ggplot() +
+  geom_jitter(data = s23_rain_pts,
+              aes(period, pib_raw),
+              width = 0.12, height = 0, alpha = 0.7, size = 1.4, color = "red") +
+  geom_errorbar(data = newdat,
+                aes(period, ymin = lo, ymax = hi),
+                width = 0.15, linewidth = 0.8, color = "black") +
+  geom_point(data = newdat,
+             aes(period, pred),
+             size = 4, color = "black") +
+  scale_y_continuous(limits = c(0, 0.35)) +
+  labs(x = NULL,
+       y = "Predicted PIB",
+       title = "2023") +
+  theme_bw(base_family = "Times New Roman", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line  = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x  = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text  = element_text(colour = "black", size = 12),
+        axis.text.y  = element_text(colour = "black", size = 12),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
+
+```{r}
+# Side-by-side PIB vs days-since-fire, 2022 | 2023.
+# Assumes s22_daily and s23_daily are in scope from the two manuscript Rmds.
+
+library(tidyverse)
+
+both <- bind_rows(
+  s22_daily %>% transmute(year = 2022, dsf = DSF, pib = pib_raw),
+  s23_daily %>% transmute(year = 2023, dsf = DSF, pib = pib_raw)
+)
+
+vlines <- tibble(year = c(2022, 2023), psi = c(56, 77))  # supp-feed start DSF
+
+ggplot(both, aes(dsf, pib)) +
+  geom_vline(data = vlines, aes(xintercept = psi),
+             linetype = "dashed", color = "midnightblue", linewidth = 0.5) +
+  geom_point(size = 1.8, alpha = 0.9) +
+  facet_wrap(~ year) +
+  labs(x = "Days since fire", y = "PIB") +
+  theme_bw(base_family = "Times New Roman", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line  = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x  = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        axis.text.y  = element_text(colour = "black", size = 12),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
+

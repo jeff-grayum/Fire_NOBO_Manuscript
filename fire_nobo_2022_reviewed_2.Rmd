@@ -1,0 +1,570 @@
+---
+title: "Fire_NOBO_Manuscript_2022 (reviewed)"
+output: html_document
+date: "2026-04-24"
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+library(janitor)
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(writexl)
+library(sf)
+library(lme4)
+library(betareg)
+library(MuMIn)
+library(performance)
+theme_set(theme_minimal())
+```
+
+## Named constants
+
+```{r}
+# All hardcoded dates / thresholds live here so sensitivity analyses are trivial.
+BURN_DATE       <- ymd("2022-04-11")
+FEED_START_DATE <- ymd("2022-06-06")
+FEED_START_DSF  <- as.integer(FEED_START_DATE - BURN_DATE)  # 56
+BOOT_B          <- 2000                                     # bootstrap reps
+BOUND_EPS       <- 1e-5                                     # beta bound
+ACF_LAG         <- 7                                        # weekly lag for Ljung-Box
+# Telemetry coordinates are UTM; Ichauway is in zone 17N. If a future
+# deployment reports a different zone, set POINTS_CRS here.
+POINTS_CRS      <- 26917                                    # NAD83 / UTM zone 17N
+```
+
+## Helper functions
+
+```{r}
+# Bound proportions away from 0 and 1 for beta regression.
+bound_beta <- function(x, eps = BOUND_EPS) pmin(pmax(x, eps), 1 - eps)
+
+# Bootstrap prediction CIs for a betareg model, by case resampling.
+# Per-iteration seeds make the procedure reproducible even if a fit fails
+# mid-loop (failed iterations don't desync the RNG stream).
+boot_beta_ci <- function(formula, data, newdata, B = BOOT_B, seed = 123) {
+  preds <- matrix(NA_real_, nrow = B, ncol = nrow(newdata))
+  for (i in seq_len(B)) {
+    set.seed(seed + i)
+    d <- data[sample.int(nrow(data), replace = TRUE), ]
+    fit <- tryCatch(
+      suppressWarnings(betareg(formula, data = d, link = "logit")),
+      error = function(e) NULL
+    )
+    if (!is.null(fit)) {
+      preds[i, ] <- tryCatch(
+        predict(fit, newdata = newdata, type = "response"),
+        error = function(e) rep(NA_real_, nrow(newdata))
+      )
+    }
+  }
+  data.frame(
+    lo = apply(preds, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+}
+
+# Block bootstrap for time-series-aware CIs. Use when ACF shows residual
+# autocorrelation — case resampling would produce CIs that are too narrow
+# because it ignores temporal structure.
+boot_beta_ci_block <- function(formula, data, newdata, block_size = 7,
+                               B = BOOT_B, seed = 123, time_var = "DSF") {
+  data  <- data[order(data[[time_var]]), ]
+  n     <- nrow(data)
+  nblk  <- ceiling(n / block_size)
+  starts_all <- seq_len(max(1, n - block_size + 1))
+  preds <- matrix(NA_real_, nrow = B, ncol = nrow(newdata))
+  for (i in seq_len(B)) {
+    set.seed(seed + i)
+    starts <- sample(starts_all, size = nblk, replace = TRUE)
+    idx <- unlist(lapply(starts, function(s) s:min(s + block_size - 1, n)))
+    idx <- idx[seq_len(n)]
+    d   <- data[idx, ]
+    fit <- tryCatch(
+      suppressWarnings(betareg(formula, data = d, link = "logit")),
+      error = function(e) NULL
+    )
+    if (!is.null(fit)) {
+      preds[i, ] <- tryCatch(
+        predict(fit, newdata = newdata, type = "response"),
+        error = function(e) rep(NA_real_, nrow(newdata))
+      )
+    }
+  }
+  data.frame(
+    lo = apply(preds, 2, quantile, probs = 0.025, na.rm = TRUE),
+    hi = apply(preds, 2, quantile, probs = 0.975, na.rm = TRUE)
+  )
+}
+
+# Leave-one-out CV for a single-predictor betareg model. Evaluates fit
+# against the raw (unbounded) PIB when available.
+beta_loocv <- function(data, formula = pib ~ ps, truth_col = "pib_raw") {
+  n <- nrow(data)
+  preds <- numeric(n)
+  for (i in seq_len(n)) {
+    fit <- suppressWarnings(
+      betareg(formula, data = data[-i, ], link = "logit")
+    )
+    preds[i] <- predict(fit, newdata = data[i, , drop = FALSE], type = "response")
+  }
+  truth <- if (truth_col %in% names(data)) data[[truth_col]] else data$pib
+  list(
+    rmse = sqrt(mean((truth - preds)^2)),
+    cor  = cor(truth, preds)
+  )
+}
+
+# Temporal autocorrelation diagnostics for a betareg fit. Observations must
+# be in time order. Returns Pearson residuals invisibly.
+check_autocorr <- function(model, label = "", lag = ACF_LAG) {
+  r <- residuals(model, type = "pearson")
+  cat("\n--- Autocorrelation diagnostics:", label, "---\n")
+  print(Box.test(r, lag = lag, type = "Ljung-Box"))
+  acf(r, main = paste("ACF of Pearson residuals:", label))
+  invisible(r)
+}
+
+# Minimal manuscript-friendly plot theme.
+plot_theme <- theme(
+  legend.position   = "none",
+  panel.grid.major  = element_blank(),
+  panel.grid.minor  = element_blank(),
+  axis.line         = element_line("black"),
+  axis.ticks        = element_line("black"),
+  axis.text         = element_text(colour = "black", size = 12),
+  axis.title        = element_text(colour = "black", size = 12),
+  legend.title      = element_text(colour = "black", size = 12),
+  legend.text       = element_text(colour = "black", size = 12),
+  plot.margin       = margin(5, 10, 5, 5, "pt")
+)
+```
+
+## Load data
+
+```{r}
+summer22 <- read_xlsx(
+  "/Volumes/Samsung_T5/BOBWHITE_DATA/Clean/SummerLocations/Summer2022/summer_2022_points_veg_CorrectBirdsOnline.xlsx"
+) %>%
+  mutate(date = ymd(date)) %>%
+  filter(status == "A")
+
+# Burn compartment polygons (for distance-to-edge calculations).
+burn_polys <- st_read(
+  "/Volumes/Samsung_T5/BOBWHITE_DATA/Maps/2022_burn_compartments/Polygons/NoAG_NoHW/2022_burn_units_NoAG_NoHW.shp"
+)
+
+# Daily rainfall, Crafton weather station, 2022.
+rain <- read_xlsx("/Users/grayum.jeffrey/Downloads/Crafton_rainfall_2022 .xlsx") %>%
+  clean_names() %>%
+  transmute(
+    date          = ymd(date),
+    rain_total_mm = rain_total_mm,
+    dsf           = as.integer(date - BURN_DATE)
+  )
+```
+
+## Build PIB
+
+```{r}
+# Audit: days with zero or missing birds_online. These are NOT days with
+# PIB = 0; they are days with no valid denominator and must be dropped.
+bad_days <- summer22 %>%
+  filter(is.na(birds_online) | birds_online == 0) %>%
+  distinct(date, birds_online)
+cat("Rows with birds_online NA or 0:", nrow(bad_days), "\n")
+if (nrow(bad_days) > 0) print(bad_days)
+
+# Unique birds in burned compartments each day.
+birds_burned_daily <- summer22 %>%
+  filter(burned == 1) %>%
+  group_by(date) %>%
+  summarise(birds_in_burned_areas = n_distinct(band_numb), .groups = "drop")
+
+# Days with zero birds in burned areas legitimately give PIB = 0. Days
+# missing a denominator are dropped (not imputed to 0).
+s22 <- summer22 %>%
+  left_join(birds_burned_daily, by = "date") %>%
+  mutate(birds_in_burned_areas = replace_na(birds_in_burned_areas, 0)) %>%
+  filter(!is.na(birds_online), birds_online > 0) %>%
+  mutate(pib = birds_in_burned_areas / birds_online)
+
+stopifnot(all(is.finite(s22$pib)))
+stopifnot(all(s22$pib >= 0 & s22$pib <= 1))
+```
+
+## Distance-to-edge
+
+```{r}
+# CRS handling: telemetry `easting` / `northing` are projected metres. We set
+# a known UTM CRS on the points and reproject the burn polygons into it
+# before computing distances — never coerce a blank CRS onto the points.
+stopifnot(!is.na(st_crs(burn_polys)))    # burn polys must carry a CRS
+s22_sf <- s22 %>%
+  st_as_sf(coords = c("easting", "northing"), crs = POINTS_CRS, remove = FALSE)
+burn_polys_proj <- st_transform(burn_polys, POINTS_CRS)
+burn_edges      <- st_boundary(burn_polys_proj)
+
+# Nearest-edge distance for every point, in metres.
+s22$distance_to_edge <- as.numeric(apply(st_distance(s22_sf, burn_edges), 1, min))
+
+# Reference lines in the histograms are computed from the data, not hardcoded.
+mean_in  <- s22 %>% filter(burned == 1) %>% summarise(m = mean(distance_to_edge)) %>% pull(m)
+mean_out <- s22 %>% filter(burned == 0) %>% summarise(m = mean(distance_to_edge)) %>% pull(m)
+
+# DSF vs distance to edge, birds within burn units only.
+s22 %>%
+  filter(burned == 1) %>%
+  ggplot(aes(DSF, distance_to_edge)) +
+  geom_vline(xintercept = FEED_START_DSF, linetype = "dashed", color = "midnightblue") +
+  geom_point() +
+  labs(x = "Days since fire", y = "Distance to perimeter of burn unit (m)") +
+  theme_bw() + plot_theme
+
+# Mixed model: does distance-to-edge change with DSF within burned units?
+# NOTE: random intercept per bird does not absorb within-bird temporal
+# autocorrelation. For a published estimate, refit with an AR(1) correlation
+# structure (nlme::lme(..., correlation = corAR1(form = ~ DSF | band_numb))).
+dist_model <- lmer(distance_to_edge ~ DSF + (1 | band_numb),
+                   data = filter(s22, burned == 1))
+summary(dist_model)
+
+# Mean distance to edge by burn status.
+s22 %>%
+  group_by(burned) %>%
+  summarise(mean_distance = mean(distance_to_edge), .groups = "drop")
+
+# Histogram: birds inside burns (reference line = observed mean).
+s22 %>%
+  filter(burned == 1) %>%
+  ggplot(aes(distance_to_edge)) +
+  geom_histogram(binwidth = 10, fill = "midnightblue", alpha = 0.8) +
+  geom_vline(xintercept = mean_in, linetype = "dashed", color = "gray") +
+  labs(x = "Distance to edge", y = NULL,
+       title = sprintf("Birds within burn compartments (mean = %.1f m)", mean_in))
+
+# Histogram: birds outside burns.
+s22 %>%
+  filter(burned == 0) %>%
+  ggplot(aes(distance_to_edge)) +
+  geom_histogram(binwidth = 20, fill = "midnightblue", alpha = 0.8) +
+  geom_vline(xintercept = mean_out, linetype = "dashed", color = "gray") +
+  labs(x = "Distance to edge", y = NULL,
+       title = sprintf("Birds outside burn compartments (mean = %.1f m)", mean_out))
+
+# Boxplot comparison.
+s22 %>%
+  mutate(burned = factor(burned, labels = c("Unburned", "Burned"))) %>%
+  ggplot(aes(burned, distance_to_edge)) +
+  geom_boxplot(fill = "midnightblue", alpha = 0.5) +
+  labs(x = "Burn status", y = "Distance to edge")
+```
+
+## Day-level dataset
+
+```{r}
+# Veg is constant within a day — verify before slice_head collapses rows.
+invariance <- s22 %>%
+  group_by(DSF) %>%
+  summarise(
+    n_pib  = n_distinct(pib),
+    n_pg   = n_distinct(pg),
+    n_ps   = n_distinct(ps),
+    n_week = n_distinct(week),
+    .groups = "drop"
+  )
+violations <- filter(invariance, n_pib > 1 | n_pg > 1 | n_ps > 1 | n_week > 1)
+if (nrow(violations) > 0) {
+  warning("Within-day values vary on the following DSF; slice_head will silently pick one row:")
+  print(violations)
+} else {
+  cat("Within-day invariance check: PASSED\n")
+}
+
+s22_daily <- s22 %>%
+  arrange(DSF, date) %>%                     # deterministic slice_head
+  group_by(DSF) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  arrange(DSF) %>%                           # ensure time order for ACF/Ljung-Box
+  select(pib, DSF, week, start_date_of_week, pg:hs) %>%
+  mutate(
+    feed    = as.integer(DSF >= FEED_START_DSF),
+    pib_raw = pib,                           # retain unbounded value
+    pib     = bound_beta(pib)                # bounded copy for betareg
+  )
+
+# Boundary diagnostic. If many days sit at 0 or 1, a zero/one-inflated beta
+# (gamlss::BEINF or glmmTMB) is more principled than bounding.
+p0 <- mean(s22_daily$pib_raw == 0)
+p1 <- mean(s22_daily$pib_raw == 1)
+cat(sprintf("Proportion PIB == 0 (raw): %.3f\n", p0))
+cat(sprintf("Proportion PIB == 1 (raw): %.3f\n", p1))
+if (p0 > 0.05 || p1 > 0.05) {
+  message("WARNING: >5% of days sit at a boundary. Consider a ZOIB model before trusting inference.")
+}
+
+s22_pre  <- filter(s22_daily, feed == 0)
+s22_post <- filter(s22_daily, feed == 1)
+
+# Overall PIB over time with supp-feed marker.
+ggplot(s22_daily, aes(DSF, pib_raw)) +
+  geom_point() +
+  geom_vline(xintercept = FEED_START_DSF, linetype = "dashed", color = "midnightblue") +
+  labs(x = "Days since fire", y = "PIB", title = "2022") +
+  plot_theme
+```
+
+## Vegetation correlations
+
+```{r}
+veg_cor_22 <- s22_daily %>%
+  select(pg:hs) %>%
+  cor() %>%
+  round(2)
+veg_cor_22
+
+veg_cor_22 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("variable") %>%
+  write_xlsx("/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/veg_cor22.xlsx")
+```
+
+## PIB ~ shrub cover (ps): separate pre- and post-supp models
+
+```{r}
+fit_and_plot_ps <- function(dat, title) {
+  m <- betareg(pib ~ ps, data = dat, link = "logit")
+  print(summary(m))
+  check_autocorr(m, label = title)
+
+  grid <- data.frame(ps = seq(min(dat$ps), max(dat$ps), length.out = 1000))
+  grid$pred <- predict(m, newdata = grid, type = "response")
+  grid <- cbind(grid, boot_beta_ci(pib ~ ps, dat, grid, B = BOOT_B))
+
+  p <- ggplot(grid, aes(ps)) +
+    geom_point(data = dat, aes(ps, pib_raw), size = 2, alpha = 0.7) +
+    geom_line(aes(y = pred), linewidth = 1.2) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2) +
+    labs(x = "Percent shrub cover", y = "PIB", title = title) +
+    plot_theme
+  print(p)
+
+  invisible(list(model = m, grid = grid))
+}
+
+pre_ps  <- fit_and_plot_ps(s22_pre,  "2022: Pre-supplemental period")
+post_ps <- fit_and_plot_ps(s22_post, "2022: Post-supplemental period")
+
+# LOOCV evaluated against the raw (unbounded) PIB.
+loocv_pre  <- beta_loocv(s22_pre)
+loocv_post <- beta_loocv(s22_post)
+loocv_pre
+loocv_post
+```
+
+## Rainfall joined to daily data
+
+```{r}
+# Daily cumulative rainfall since the burn date is the rainfall variable used
+# for modeling. Weekly totals are retained only for descriptive plots.
+rain_cum_daily <- rain %>%
+  arrange(dsf) %>%
+  mutate(cum_rain_mm = cumsum(rain_total_mm)) %>%
+  select(dsf, cum_rain_mm)
+
+week_lookup_22 <- s22_daily %>%
+  distinct(week, start_date_of_week) %>%
+  arrange(start_date_of_week) %>%
+  mutate(
+    start_date = as.Date(start_date_of_week),
+    end_date   = lead(start_date) - 1
+  )
+week_lookup_22$end_date[is.na(week_lookup_22$end_date)] <-
+  week_lookup_22$start_date[is.na(week_lookup_22$end_date)] + 6
+
+rain_weekly_22 <- rain %>%
+  select(date, rain_total_mm) %>%
+  tidyr::crossing(week_lookup_22) %>%
+  filter(date >= start_date, date <= end_date) %>%
+  group_by(week, start_date_of_week) %>%
+  summarise(weekly_rain_mm = sum(rain_total_mm, na.rm = TRUE), .groups = "drop")
+
+s22_rain <- s22_daily %>%
+  left_join(rain_cum_daily,  by = c("DSF" = "dsf")) %>%
+  left_join(rain_weekly_22,  by = c("week", "start_date_of_week")) %>%
+  arrange(DSF)
+
+stopifnot(all(!is.na(s22_rain$cum_rain_mm)))
+stopifnot(all(!is.na(s22_rain$weekly_rain_mm)))
+
+# Descriptive plots (weekly bars, cumulative curve).
+ggplot(s22_rain, aes(week, weekly_rain_mm)) +
+  geom_col(fill = "midnightblue") +
+  labs(x = "Week", y = "Weekly rainfall (mm)", title = "2022 (descriptive only)") +
+  plot_theme
+
+ggplot(s22_rain, aes(DSF, cum_rain_mm)) +
+  geom_area(fill = "midnightblue", alpha = 0.95) +
+  labs(x = "Days since fire", y = "Cumulative rainfall (mm)", title = "2022") +
+  theme_bw(base_family = "Times New Roman", base_size = 12) +
+  theme(legend.position = "right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line  = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x  = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text  = element_text(colour = "black", size = 12),
+        axis.text.y  = element_text(colour = "black", size = 12),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
+
+## Collinearity audit (printed for the record)
+
+```{r}
+# Weekly rainfall is the modeled rainfall variable: cum_rain_mm is monotonic
+# in DSF (r ~ 0.97), so it is structurally a time proxy. weekly_rain_mm is
+# not monotonic — any signal it carries is a genuine rainfall effect.
+cor_mat <- s22_rain %>%
+  select(ps, feed, weekly_rain_mm, DSF) %>%
+  cor() %>%
+  round(2)
+cor_mat
+```
+
+## Beta-regression candidate set, ranked by AICc
+
+```{r}
+# Three univariate candidates plus two multivariate candidates combining the
+# two predictors that are NOT collinear in this dataset (ps vs weekly_rain_mm
+# correlate at r = 0.26 — well below the ~0.7 threshold where collinearity
+# destabilises a betareg fit). DSF is excluded because it is structurally a
+# time axis rather than an ecological predictor and correlates at r > 0.85
+# with ps and feed.
+m_ps        <- betareg(pib ~ ps,                  data = s22_rain, link = "logit")
+m_rain      <- betareg(pib ~ weekly_rain_mm,      data = s22_rain, link = "logit")
+m_feed      <- betareg(pib ~ feed,                data = s22_rain, link = "logit")
+m_ps_rain   <- betareg(pib ~ ps + weekly_rain_mm, data = s22_rain, link = "logit")
+m_ps_x_rain <- betareg(pib ~ ps * weekly_rain_mm, data = s22_rain, link = "logit")
+
+# Autocorrelation diagnostics on each candidate.
+walk2(
+  list(m_ps, m_rain, m_feed, m_ps_rain, m_ps_x_rain),
+  c("ps", "weekly_rain_mm", "feed",
+    "ps + weekly_rain_mm", "ps * weekly_rain_mm"),
+  ~ check_autocorr(.x, label = .y)
+)
+
+# For single-predictor models we print the predictor's p-value; multivariate
+# models get NA here because the table is single-slot. Full coefficient
+# tables are printed below for each multivariate fit.
+extract_fit <- function(model, name, p_row = 2) {
+  sm <- summary(model)$coefficients$mean
+  p  <- if (!is.na(p_row) && p_row <= nrow(sm)) sm[p_row, "Pr(>|z|)"] else NA_real_
+  data.frame(
+    Model = name,
+    R2    = unname(performance::r2(model)$R2),
+    AICc  = MuMIn::AICc(model),
+    p     = p
+  )
+}
+
+summary22_rain <- bind_rows(
+  extract_fit(m_ps,        "PIB ~ ps"),
+  extract_fit(m_rain,      "PIB ~ weekly_rain_mm"),
+  extract_fit(m_feed,      "PIB ~ feed"),
+  extract_fit(m_ps_rain,   "PIB ~ ps + weekly_rain_mm", p_row = NA),
+  extract_fit(m_ps_x_rain, "PIB ~ ps * weekly_rain_mm", p_row = NA)
+) %>%
+  arrange(AICc) %>%
+  mutate(
+    deltaAICc = AICc - min(AICc),
+    weight    = MuMIn::Weights(AICc)
+  )
+
+summary22_rain
+
+# Coefficient summaries for the multivariate models so all slopes are visible.
+cat("\n--- PIB ~ ps + weekly_rain_mm (2022) ---\n")
+print(summary(m_ps_rain)$coefficients$mean)
+cat("\n--- PIB ~ ps * weekly_rain_mm (2022) ---\n")
+print(summary(m_ps_x_rain)$coefficients$mean)
+
+write_xlsx(summary22_rain,
+           "/Volumes/Samsung_T5/FIRE_NOBO_MANUSCRIPT/model_summary_22_rain_fixed.xlsx")
+```
+
+## Prediction plot: top model (PIB ~ ps * weekly_rain_mm), dry vs wet
+
+```{r}
+m_top <- m_ps_x_rain
+summary(m_top)
+check_autocorr(m_top, label = "top model: ps * weekly_rain_mm")
+
+# Two representative weekly-rainfall levels: 10th (dry) and 90th (wet) percentile.
+rain_levels <- quantile(s22_rain$weekly_rain_mm, probs = c(0.10, 0.90))
+print(rain_levels)
+
+# Prediction grid: ps spans observed range; weekly_rain_mm fixed at each level.
+ps_seq <- seq(min(s22_rain$ps, na.rm = TRUE),
+              max(s22_rain$ps, na.rm = TRUE),
+              length.out = 200)
+newdat <- expand.grid(ps = ps_seq, weekly_rain_mm = rain_levels)
+newdat$pred <- predict(m_top, newdata = newdat, type = "response")
+
+# Block-bootstrap CIs (block_size = 7 days) on the interaction predictions.
+newdat <- cbind(
+  newdat,
+  boot_beta_ci_block(pib ~ ps * weekly_rain_mm,
+                     s22_rain, newdat,
+                     block_size = 7, B = BOOT_B, time_var = "DSF")
+)
+
+# Discrete dry/wet labels for the legend.
+newdat$rain_band <- factor(
+  ifelse(newdat$weekly_rain_mm == rain_levels[1],
+         "Dry (10th %)", "Wet (90th %)"),
+  levels = c("Dry (10th %)", "Wet (90th %)")
+)
+
+ggplot(newdat, aes(ps, pred, color = rain_band, fill = rain_band)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, colour = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("Dry (10th %)" = "#e76f51",
+                                "Wet (90th %)" = "#2a9d8f"),
+                     name = "Rainfall level") +
+  scale_fill_manual(values  = c("Dry (10th %)" = "#e76f51",
+                                "Wet (90th %)" = "#2a9d8f"),
+                    name = "Rainfall level") +
+  labs(x = "Percent shrub cover",
+       y = "Predicted PIB",
+       title = "2022") +
+  theme_bw(base_family = "Times New Roman", base_size = 12) +
+  theme(legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line  = element_line("black"),
+        axis.ticks = element_line("black"),
+        axis.text.x  = element_text(colour = "black", size = 12),
+        axis.title.y = element_text(colour = "black", size = 12),
+        axis.title.x = element_text(colour = "black", size = 12),
+        legend.title = element_text(colour = "black", size = 12),
+        legend.text  = element_text(colour = "black", size = 12),
+        axis.text.y  = element_text(colour = "black", size = 12),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", size = 12),
+        plot.margin = margin(t = 5, r = 10, b = 5, l = 5, unit = "pt"))
+```
